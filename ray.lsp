@@ -28,12 +28,15 @@
 (defun sendray (pt xr yr zr)
   (multiple-value-bind (s int) (first-hit pt xr yr zr)
     (if s
-        (* (min 1
-                (+ *ambient*
-                   (* 0.7
-                      (shadow-factor s int)
-                      (lambert s int))))
-           (surface-color s))
+	(let* ((diff (* (shadow-factor s int)
+			(lambert s int)))
+	       (spec (* 0.3
+			(shadow-factor s int)   ;; ←追加
+			(specular s int xr yr zr)))
+	       (c (min 1 (+ *ambient*
+			    (* 0.7 diff)
+			    spec))))
+          (* c (surface-color s)))
         0)))
 
 (defun first-hit (pt xr yr zr)
@@ -107,3 +110,24 @@
     (make-point :x (+ (x center) dx)
                 :y (y center)
                 :z (+ (z center) dz))))
+
+(defun reflect (lx ly lz nx ny nz)
+  ;; R = L - 2(L・N)N
+  (let ((dot (+ (* lx nx) (* ly ny) (* lz nz))))
+    (values (- lx (* 2 dot nx))
+            (- ly (* 2 dot ny))
+            (- lz (* 2 dot nz)))))
+
+(defun specular (s int xr yr zr)
+  (multiple-value-bind (xn yn zn) (normal s int)
+    (multiple-value-bind (lx ly lz)
+        (unit-vector (- (x *light*) (x int))
+                     (- (y *light*) (y int))
+                     (- (z *light*) (z int)))
+      (multiple-value-bind (rx ry rz)
+          (reflect (- lx) (- ly) (- lz) xn yn zn)
+        (let* ((vdot (max 0 (+ (* rx (- xr))
+                               (* ry (- yr))
+                               (* rz (- zr)))))
+               (shininess 10))   ;; ←下げる
+          (expt vdot shininess))))))

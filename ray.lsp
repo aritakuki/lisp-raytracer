@@ -1,5 +1,5 @@
 (load (merge-pathnames "util.lsp" *load-truename*))
-(defparameter *ambient* 0.3)
+(defparameter *ambient* 0.32)
 (defparameter *light* (make-point :x 600 :y 300 :z 200))
 (defparameter *shadow-mul* 0.75)
 
@@ -20,23 +20,56 @@
 
 (defun color-at (x y)
   (multiple-value-bind (xr yr zr)
-		      (unit-vector (- x (x eye))
-				   (- y (y eye))
-				   (- 0 (z eye)))
-		      (round (* (sendray eye xr yr zr) 255))))
+      (unit-vector (- x (x eye))
+                   (- y (y eye))
+                   (- 0 (z eye)))
+    (round (* (sendray eye xr yr zr) 255))))
 
-(defun sendray (pt xr yr zr)
+(defparameter *max-depth* 3)
+
+(defun sendray (pt xr yr zr &optional (depth 0))
   (multiple-value-bind (s int) (first-hit pt xr yr zr)
     (if s
-	(let* ((diff (* (shadow-factor s int)
-			(lambert s int)))
-	       (spec (* 0.3
-			(shadow-factor s int)   ;; ←追加
-			(specular s int xr yr zr)))
-	       (c (min 1 (+ *ambient*
-			    (* 0.7 diff)
-			    spec))))
-          (* c (surface-color s)))
+        (multiple-value-bind (xn yn zn) (normal s int)
+          ;; --- ベース光（ここにスペキュラを残す） ---
+          (let* ((diff (* (shadow-factor s int)
+                          (lambert s int)))
+                 (spec (* 0.6
+                          (shadow-factor s int)
+                          (specular s int xr yr zr)))
+                 (base (+ *ambient* (* 0.7 diff) spec))
+
+                 ;; --- 反射 ---
+                 (refl (or (and (slot-exists-p s 'reflectivity)
+                                (sphere-reflectivity s))
+                           0.0))
+
+                 ;; 法線方向にオフセット（自己交差防止）
+                 (eps 0.001)
+                 (offset (make-point :x (+ (x int) (* xn eps))
+                                     :y (+ (y int) (* yn eps))
+                                     :z (+ (z int) (* zn eps))))
+
+		 (refc
+		   (if (and (> refl 0.0) (< depth *max-depth*))
+		       (let ((acc 0.0) (blur (* refl 0.7)))
+			 (dotimes (i 4)   ;; ← 2 → 4
+			   (multiple-value-bind (rx ry rz)
+			       (reflect-dir xr yr zr xn yn zn)
+			     (multiple-value-bind (rx2 ry2 rz2)
+				 (unit-vector
+				  (perturb rx blur)
+				  (perturb ry blur)
+				  (perturb rz blur))
+			       (incf acc
+				     (sendray offset rx2 ry2 rz2 (1+ depth))))))
+			 (/ acc 4))
+		       0.0))
+                 ;; --- 合成：加算ブレンド ---
+                 ;; 反射を「足す」。ただし全体はクランプ
+                 (c (min 1.0 (+ base
+				(* refl refc)))))
+            (* c (surface-color s))))
         0)))
 
 (defun first-hit (pt xr yr zr)
@@ -74,12 +107,10 @@
           (and blocking-surface
                (not (eq blocking-surface s))
                hit
-               ;; ❌ これを削除した
-               ;; (> (distance offset hit) 0.05)
                (< (distance offset hit) light-dist)))))))
 
 (defun shadow-factor (s int)
-  (let ((samples 48)   ;; 32〜64推奨（48はバランス良い）
+  (let ((samples 64)   ;; 32〜64推奨（48はバランス良い）
         (radius 45)
         (acc 0.0))
     (dotimes (i samples)
@@ -129,5 +160,15 @@
         (let* ((vdot (max 0 (+ (* rx (- xr))
                                (* ry (- yr))
                                (* rz (- zr)))))
-               (shininess 10))   ;; ←下げる
+               (shininess 8))   ;; ←下げる
           (expt vdot shininess))))))
+
+(defun reflect-dir (ix iy iz nx ny nz)
+  ;; R = I - 2 (I·N) N
+  (let ((dot (+ (* ix nx) (* iy ny) (* iz nz))))
+    (values (- ix (* 2 dot nx))
+            (- iy (* 2 dot ny))
+            (- iz (* 2 dot nz)))))
+
+(defun perturb (x scale)
+  (+ x (* scale (- (random 1.0) 0.5))))

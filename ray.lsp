@@ -8,31 +8,207 @@
 (defparameter *world* nil)
 (defconstant eye (make-point :x 0 :y 0 :z 200))
 
-(defparameter *vogel-cache* nil)
+(defparameter *vogel-cache-dxs* nil)
+(defparameter *vogel-cache-dzs* nil)
 (defparameter *vogel-cache-samples* nil)
 (defparameter *vogel-cache-radius* nil)
 
+(defparameter *bvh-root* nil)
+(defparameter *bvh-world* nil)
+(defparameter *surface-id* nil)
+
+(defstruct bvh-node
+  minx miny minz
+  maxx maxy maxz
+  left right
+  objects)
+
+(defun sphere-bbox (s)
+  (let* ((c (sphere-center s))
+	 (r (sphere-radius s)))
+    (values (- (x c) r) (- (y c) r) (- (z c) r)
+	    (+ (x c) r) (+ (y c) r) (+ (z c) r))))
+
+(defun surface-bbox (s)
+  (typecase s
+    (sphere (sphere-bbox s))))
+
+(defun bvh-merge-bbox (ax ay az bx by bz cx cy cz dx dy dz)
+  (values (min ax bx cx dx)
+	  (min ay by cy dy)
+	  (min az bz cz dz)
+	  (max ax bx cx dx)
+	  (max ay by cy dy)
+	  (max az bz cz dz)))
+
+(defun bvh-bounds-of-objects (objects)
+  (let (minx miny minz maxx maxy maxz)
+    (dolist (s objects)
+      (multiple-value-bind (a b c d e f) (surface-bbox s)
+	(if (null minx)
+	    (setf minx a miny b minz c maxx d maxy e maxz f)
+	    (setf minx (min minx a)
+		  miny (min miny b)
+		  minz (min minz c)
+		  maxx (max maxx d)
+		  maxy (max maxy e)
+		  maxz (max maxz f)))))
+    (values minx miny minz maxx maxy maxz)))
+
+(defun bvh-surface-center-axis (s axis)
+  (let ((c (sphere-center s)))
+    (ecase axis
+      (0 (x c))
+      (1 (y c))
+      (2 (z c)))))
+
+(defun build-bvh (objects)
+  (multiple-value-bind (minx miny minz maxx maxy maxz)
+      (bvh-bounds-of-objects objects)
+    (let* ((count (length objects))
+	   (ex (- maxx minx))
+	   (ey (- maxy miny))
+	   (ez (- maxz minz))
+	   (axis (cond ((and (>= ex ey) (>= ex ez)) 0)
+		       ((>= ey ez) 1)
+		       (t 2))))
+      (if (<= count 4)
+	  (make-bvh-node :minx minx :miny miny :minz minz
+			 :maxx maxx :maxy maxy :maxz maxz
+			 :objects objects)
+	  (let* ((sorted (stable-sort (copy-list objects) #'<
+				     :key (lambda (s) (bvh-surface-center-axis s axis))))
+		 (mid (ash count -1))
+		 (left-objects (subseq sorted 0 mid))
+		 (right-objects (subseq sorted mid))
+		 (left (build-bvh left-objects))
+		 (right (build-bvh right-objects)))
+	    (make-bvh-node :minx minx :miny miny :minz minz
+			   :maxx maxx :maxy maxy :maxz maxz
+			   :left left :right right))))))
+
+(defun rebuild-bvh ()
+  (setf *bvh-world* *world*
+	*bvh-root* (and *world* (build-bvh *world*))
+	*surface-id* (make-hash-table :test #'eq))
+  (let ((i 0))
+    (dolist (s *world*)
+      (setf (gethash s *surface-id*) i)
+      (incf i)))
+  *bvh-root*)
+
+(defun ensure-bvh ()
+  (when (not (eq *bvh-world* *world*))
+    (rebuild-bvh))
+  *bvh-root*)
+
+(defun ray-aabb-range (pt xr yr zr node)
+  (labels ((slab (p d min max)
+	     (if (zerop d)
+		 (if (and (>= p min) (<= p max))
+		     (values most-negative-double-float most-positive-double-float)
+		     (values nil nil))
+		 (let* ((inv (/ 1.0d0 d))
+			(t1 (* (- min p) inv))
+			(t2 (* (- max p) inv)))
+		   (if (< t1 t2)
+		       (values t1 t2)
+		       (values t2 t1))))))
+    (multiple-value-bind (tx1 tx2) (slab (x pt) xr (bvh-node-minx node) (bvh-node-maxx node))
+      (when tx1
+      (multiple-value-bind (ty1 ty2) (slab (y pt) yr (bvh-node-miny node) (bvh-node-maxy node))
+        (when ty1
+        (multiple-value-bind (tz1 tz2) (slab (z pt) zr (bvh-node-minz node) (bvh-node-maxz node))
+          (when tz1
+            (let ((tmin (max tx1 ty1 tz1))
+			  (tmax (min tx2 ty2 tz2)))
+		      (when (<= tmin tmax)
+			(values tmin tmax)))))))))))
+
+(defun bvh-first-hit (pt xr yr zr)
+  (let ((best-s nil)
+	(best-t nil)
+	(best-id nil)
+	(stack (list *bvh-root*)))
+    (loop while stack do
+      (let ((node (pop stack)))
+        (multiple-value-bind (tmin tmax) (ray-aabb-range pt xr yr zr node)
+          (declare (ignore tmax))
+          (when (and tmin (or (null best-t) (< tmin best-t)))
+            (let ((objs (bvh-node-objects node)))
+              (if objs
+                  (dolist (s objs)
+                    (let ((tt (intersect s pt xr yr zr)))
+                      (when tt
+                        (let ((sid (gethash s *surface-id*)))
+                          (when (or (null best-t)
+                                    (< tt best-t)
+                                    (and best-id (= tt best-t) (< sid best-id)))
+                            (setf best-s s
+                                  best-t tt
+                                  best-id sid))))))
+                  (let ((l (bvh-node-left node))
+                        (r (bvh-node-right node)))
+                    (cond
+                      ((and l r)
+                       (multiple-value-bind (ltmin ltmax) (ray-aabb-range pt xr yr zr l)
+                         (declare (ignore ltmax))
+                         (multiple-value-bind (rtmin rtmax) (ray-aabb-range pt xr yr zr r)
+                           (declare (ignore rtmax))
+                           (cond
+                             ((and ltmin rtmin)
+                              (if (< ltmin rtmin)
+                                  (progn (push r stack) (push l stack))
+                                  (progn (push l stack) (push r stack))))
+                             (ltmin (push l stack))
+                             (rtmin (push r stack))))))
+                      (l (push l stack))
+                      (r (push r stack))))))))))
+    (values best-s best-t)))
+
+(defun bvh-blocked-to-light (pt xr yr zr light-dist ignore-surface)
+  (let ((stack (list *bvh-root*)))
+    (loop
+	while stack
+	for node = (pop stack)
+	do
+	  (multiple-value-bind (tmin tmax) (ray-aabb-range pt xr yr zr node)
+	    (when (and tmin (< tmin light-dist) (> tmax 0.05))
+	      (let ((objs (bvh-node-objects node)))
+		(if objs
+		    (dolist (s objs)
+		      (unless (eq s ignore-surface)
+			(let ((tt (intersect s pt xr yr zr)))
+			  (when (and tt (> tt 0.05) (< tt light-dist))
+			    (return-from bvh-blocked-to-light t)))))
+		    (progn
+		      (when (bvh-node-left node) (push (bvh-node-left node) stack))
+		      (when (bvh-node-right node) (push (bvh-node-right node) stack))))))))
+    nil))
+
 (defun vogel-offsets (radius samples)
-  (when (or (null *vogel-cache*)
+  (when (or (null *vogel-cache-dxs*)
+	    (null *vogel-cache-dzs*)
 	    (not (eql *vogel-cache-samples* samples))
 	    (not (eql *vogel-cache-radius* radius)))
     (setf *vogel-cache-samples* samples
 	  *vogel-cache-radius* radius
-	  *vogel-cache*
-	  (let ((v (make-array samples)))
-	    (dotimes (i samples)
-	      (let* ((golden-angle 2.399963229728653)
-		     (r (* radius (sqrt (/ (+ i 0.5) samples))))
-		     (theta (* i golden-angle))
-		     (dx (* r (cos theta)))
-		     (dz (* r (sin theta))))
-		(setf (aref v i) (cons dx dz))))
-	    v)))
-  *vogel-cache*)
+	  *vogel-cache-dxs* (make-array samples)
+	  *vogel-cache-dzs* (make-array samples))
+    (dotimes (i samples)
+      (let* ((golden-angle 2.399963229728653)
+	     (r (* radius (sqrt (/ (+ i 0.5) samples))))
+	     (theta (* i golden-angle))
+	     (dx (* r (cos theta)))
+	     (dz (* r (sin theta))))
+	(setf (aref *vogel-cache-dxs* i) dx
+	      (aref *vogel-cache-dzs* i) dz))))
+  (values *vogel-cache-dxs* *vogel-cache-dzs*))
 
 (defun tracer (pathname &optional (res 1))
   (with-open-file (p pathname :direction :output)
     (format p "P2 ~A ~A 255" (* res 100) (* res 100))
+    (ensure-bvh)
     (let* ((n (* res 100))
            (inc (/ 1.0d0 res)))
       (dotimes (iy n)
@@ -97,17 +273,23 @@
         0)))
 
 (defun first-hit (pt xr yr zr)
-  (let (surface hit tmin)
-    (dolist (s *world*)
-      (let ((tt (intersect s pt xr yr zr)))
-	(when tt
-	  (when (or (null tmin) (< tt tmin))
-	    (setf surface s tmin tt)))))
-    (when surface
-      (setf hit (make-point :x (+ (x pt) (* tmin xr))
+  (ensure-bvh)
+  (multiple-value-bind (surface tmin)
+      (if *bvh-root*
+	  (bvh-first-hit pt xr yr zr)
+	  (let (surface tmin)
+	    (dolist (s *world*)
+	      (let ((tt (intersect s pt xr yr zr)))
+		(when tt
+		  (when (or (null tmin) (< tt tmin))
+		    (setf surface s tmin tt)))))
+	    (values surface tmin)))
+    (if surface
+	(values surface
+		(make-point :x (+ (x pt) (* tmin xr))
 			    :y (+ (y pt) (* tmin yr))
-			    :z (+ (z pt) (* tmin zr)))))
-    (values surface hit)))
+			    :z (+ (z pt) (* tmin zr))))
+	(values nil nil))))
 
 (defun first-hit-t (pt xr yr zr &optional ignore-surface)
   (let (surface tmin)
@@ -120,13 +302,16 @@
     (values surface tmin)))
 
 (defun blocked-to-light (pt xr yr zr light-dist ignore-surface)
-  (dolist (s *world* nil)
-    (unless (eq s ignore-surface)
-      (let ((tt (intersect s pt xr yr zr)))
-	(when (and tt
-		   (> tt 0.05)
-		   (< tt light-dist))
-	  (return t))))))
+  (ensure-bvh)
+  (if *bvh-root*
+      (bvh-blocked-to-light pt xr yr zr light-dist ignore-surface)
+      (dolist (s *world* nil)
+	(unless (eq s ignore-surface)
+	  (let ((tt (intersect s pt xr yr zr)))
+	    (when (and tt
+		       (> tt 0.05)
+		       (< tt light-dist))
+	      (return t)))))))
 
 (defun lambert (s int)
   (multiple-value-bind (xn yn zn) (normal s int)
@@ -137,13 +322,13 @@
       (max 0 (+ (* lx xn) (* ly yn) (* lz zn))))))
 
 (defun shadowed-to-light (s int light)
-  (multiple-value-bind (lx ly lz)
-      (unit-vector (- (x light) (x int))
-                   (- (y light) (y int))
-                   (- (z light) (z int)))
+  (multiple-value-bind (lx ly lz dist)
+      (unit-vector+mag (- (x light) (x int))
+                       (- (y light) (y int))
+                       (- (z light) (z int)))
     (multiple-value-bind (xn yn zn) (normal s int)
       ;; EPSを距離依存に
-      (let* ((eps (* 0.0005 (distance int light)))
+      (let* ((eps (* 0.0005 dist))
              (offset (make-point :x (+ (x int) (* xn eps))
                                  :y (+ (y int) (* yn eps))
                                  :z (+ (z int) (* zn eps))))
@@ -155,12 +340,11 @@
   (let ((samples 64)   ;; 32〜64推奨（48はバランス良い）
         (radius 45)
         (acc 0.0))
-    (let ((offsets (vogel-offsets radius samples)))
+    (multiple-value-bind (dxs dzs) (vogel-offsets radius samples)
       (dotimes (i samples)
-	(let* ((off (aref offsets i))
-	       (lp (make-point :x (+ (x *light*) (car off))
+	(let* ((lp (make-point :x (+ (x *light*) (aref dxs i))
 			      :y (y *light*)
-			      :z (+ (z *light*) (cdr off)))))
+			      :z (+ (z *light*) (aref dzs i)))))
 	  (incf acc
 		(if (shadowed-to-light s int lp)
 		    *shadow-mul*

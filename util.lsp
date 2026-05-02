@@ -7,6 +7,10 @@
   (let ((d (mag x y z)))
     (values (/ x d) (/ y d) (/ z d))))
 
+(defun unit-vector+mag (x y z)
+  (let ((d (mag x y z)))
+    (values (/ x d) (/ y d) (/ z d) d)))
+
 (defstruct (point (:conc-name nil))
   x y z)
 

@@ -8,15 +8,38 @@
 (defparameter *world* nil)
 (defconstant eye (make-point :x 0 :y 0 :z 200))
 
+(defparameter *vogel-cache* nil)
+(defparameter *vogel-cache-samples* nil)
+(defparameter *vogel-cache-radius* nil)
+
+(defun vogel-offsets (radius samples)
+  (when (or (null *vogel-cache*)
+	    (not (eql *vogel-cache-samples* samples))
+	    (not (eql *vogel-cache-radius* radius)))
+    (setf *vogel-cache-samples* samples
+	  *vogel-cache-radius* radius
+	  *vogel-cache*
+	  (let ((v (make-array samples)))
+	    (dotimes (i samples)
+	      (let* ((golden-angle 2.399963229728653)
+		     (r (* radius (sqrt (/ (+ i 0.5) samples))))
+		     (theta (* i golden-angle))
+		     (dx (* r (cos theta)))
+		     (dz (* r (sin theta))))
+		(setf (aref v i) (cons dx dz))))
+	    v)))
+  *vogel-cache*)
+
 (defun tracer (pathname &optional (res 1))
   (with-open-file (p pathname :direction :output)
     (format p "P2 ~A ~A 255" (* res 100) (* res 100))
-    (let ((inc (/ res)))
-      (do ((y -50 (+ y inc)))
-	  ((< (- 50 y) inc))
-	      (do ((x -50 (+ x inc)))
-		  ((< (- 50 x) inc))
-		(print (color-at x y) p))))))
+    (let* ((n (* res 100))
+           (inc (/ 1.0d0 res)))
+      (dotimes (iy n)
+	(let ((y (+ -50.0d0 (* iy inc))))
+	  (dotimes (ix n)
+	    (let ((x (+ -50.0d0 (* ix inc))))
+	      (print (color-at x y) p))))))))
 
 (defun color-at (x y)
   (multiple-value-bind (xr yr zr)
@@ -32,10 +55,11 @@
     (if s
         (multiple-value-bind (xn yn zn) (normal s int)
           ;; --- ベース光（ここにスペキュラを残す） ---
-          (let* ((diff (* (shadow-factor s int)
+          (let* ((sf (shadow-factor s int))
+		 (diff (* sf
                           (lambert s int)))
                  (spec (* 0.6
-                          (shadow-factor s int)
+			  sf
                           (specular s int xr yr zr)))
                  (base (+ *ambient* (* 0.7 diff) spec))
 
@@ -73,14 +97,36 @@
         0)))
 
 (defun first-hit (pt xr yr zr)
-  (let (surface hit dist)
+  (let (surface hit tmin)
     (dolist (s *world*)
-      (let ((h (intersect s pt xr yr zr)))
-	(when h
-	  (let ((d (distance h pt)))
-	    (when (or (null dist) (< d dist))
-	      (setf surface s hit h dist d))))))
+      (let ((tt (intersect s pt xr yr zr)))
+	(when tt
+	  (when (or (null tmin) (< tt tmin))
+	    (setf surface s tmin tt)))))
+    (when surface
+      (setf hit (make-point :x (+ (x pt) (* tmin xr))
+			    :y (+ (y pt) (* tmin yr))
+			    :z (+ (z pt) (* tmin zr)))))
     (values surface hit)))
+
+(defun first-hit-t (pt xr yr zr &optional ignore-surface)
+  (let (surface tmin)
+    (dolist (s *world*)
+      (unless (eq s ignore-surface)
+	(let ((tt (intersect s pt xr yr zr)))
+	  (when tt
+	    (when (or (null tmin) (< tt tmin))
+	      (setf surface s tmin tt))))))
+    (values surface tmin)))
+
+(defun blocked-to-light (pt xr yr zr light-dist ignore-surface)
+  (dolist (s *world* nil)
+    (unless (eq s ignore-surface)
+      (let ((tt (intersect s pt xr yr zr)))
+	(when (and tt
+		   (> tt 0.05)
+		   (< tt light-dist))
+	  (return t))))))
 
 (defun lambert (s int)
   (multiple-value-bind (xn yn zn) (normal s int)
@@ -101,24 +147,24 @@
              (offset (make-point :x (+ (x int) (* xn eps))
                                  :y (+ (y int) (* yn eps))
                                  :z (+ (z int) (* zn eps))))
-             (light-dist (distance offset light)))
-        (multiple-value-bind (blocking-surface hit)
-            (first-hit offset lx ly lz)
-          (and blocking-surface
-               (not (eq blocking-surface s))
-               hit
-               (< (distance offset hit) light-dist)))))))
+             (light-dist2 (distance2 offset light))
+             (light-dist (sqrt light-dist2)))
+        (blocked-to-light offset lx ly lz light-dist s)))))
 
 (defun shadow-factor (s int)
   (let ((samples 64)   ;; 32〜64推奨（48はバランス良い）
         (radius 45)
         (acc 0.0))
-    (dotimes (i samples)
-      (let ((lp (vogel-light-point *light* radius i samples)))
-        (incf acc
-              (if (shadowed-to-light s int lp)
-                  *shadow-mul*
-                  1.0))))
+    (let ((offsets (vogel-offsets radius samples)))
+      (dotimes (i samples)
+	(let* ((off (aref offsets i))
+	       (lp (make-point :x (+ (x *light*) (car off))
+			      :y (y *light*)
+			      :z (+ (z *light*) (cdr off)))))
+	  (incf acc
+		(if (shadowed-to-light s int lp)
+		    *shadow-mul*
+		    1.0)))))
     (/ acc samples)))
 
 (defun random-light-point (center radius)

@@ -15,6 +15,11 @@
        (- (y p1) (y p2))
        (- (z p1) (z p2))))
 
+(defun distance2 (p1 p2)
+  (+ (sq (- (x p1) (x p2)))
+     (sq (- (y p1) (y p2)))
+     (sq (- (z p1) (z p2)))))
+
 (defun minroot (a b c)
   (if (zerop a)
       (let ((r (/ (- c) b)))

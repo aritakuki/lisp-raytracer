@@ -26,10 +26,7 @@
 			(sq (- (y pt) (y c)))
 			(sq (- (z pt) (z c)))
 			(- (sq (sphere-radius s)))))))
-    (if n
-	(make-point :x (+ (x pt) (* n xr))
-		    :y (+ (y pt) (* n yr))
-		    :z (+ (z pt) (* n zr))))))
+    n))
 
 (defun normal (s pt)
   (funcall (typecase s (sphere #'sphere-normal))

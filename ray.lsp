@@ -129,9 +129,11 @@
   (let ((best-s nil)
 	(best-t nil)
 	(best-id nil)
-	(stack (list *bvh-root*)))
-    (loop while stack do
-      (let ((node (pop stack)))
+	(stack (make-array 64 :adjustable t :fill-pointer 0)))
+    (when *bvh-root*
+      (vector-push-extend *bvh-root* stack))
+    (loop while (> (fill-pointer stack) 0) do
+      (let ((node (vector-pop stack)))
         (multiple-value-bind (tmin tmax) (ray-aabb-range pt xr yr zr node)
           (declare (ignore tmax))
           (when (and tmin (or (null best-t) (< tmin best-t)))
@@ -158,19 +160,21 @@
                            (cond
                              ((and ltmin rtmin)
                               (if (< ltmin rtmin)
-                                  (progn (push r stack) (push l stack))
-                                  (progn (push l stack) (push r stack))))
-                             (ltmin (push l stack))
-                             (rtmin (push r stack))))))
-                      (l (push l stack))
-                      (r (push r stack))))))))))
+                                  (progn (vector-push-extend r stack) (vector-push-extend l stack))
+                                  (progn (vector-push-extend l stack) (vector-push-extend r stack))))
+                             (ltmin (vector-push-extend l stack))
+                             (rtmin (vector-push-extend r stack))))))
+                      (l (vector-push-extend l stack))
+                      (r (vector-push-extend r stack))))))))))
     (values best-s best-t)))
 
 (defun bvh-blocked-to-light (pt xr yr zr light-dist ignore-surface)
-  (let ((stack (list *bvh-root*)))
+  (let ((stack (make-array 64 :adjustable t :fill-pointer 0)))
+    (when *bvh-root*
+      (vector-push-extend *bvh-root* stack))
     (loop
-	while stack
-	for node = (pop stack)
+	while (> (fill-pointer stack) 0)
+	for node = (vector-pop stack)
 	do
 	  (multiple-value-bind (tmin tmax) (ray-aabb-range pt xr yr zr node)
 	    (when (and tmin (< tmin light-dist) (> tmax 0.05))
@@ -182,8 +186,8 @@
 			  (when (and tt (> tt 0.05) (< tt light-dist))
 			    (return-from bvh-blocked-to-light t)))))
 		    (progn
-		      (when (bvh-node-left node) (push (bvh-node-left node) stack))
-		      (when (bvh-node-right node) (push (bvh-node-right node) stack))))))))
+		      (when (bvh-node-left node) (vector-push-extend (bvh-node-left node) stack))
+		      (when (bvh-node-right node) (vector-push-extend (bvh-node-right node) stack))))))))
     nil))
 
 (defun vogel-offsets (radius samples)

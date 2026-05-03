@@ -1,6 +1,9 @@
+(declaim (optimize (speed 3) (safety 0) (debug 0)))
+
 (load (merge-pathnames "util.lsp" *load-truename*))
-(defparameter *ambient* 0.32)
+(defparameter *ambient* 0.25)
 (defparameter *light* (make-point :x 600 :y 300 :z 200))
+;(defparameter *light* (make-point :x 0 :y 150 :z -800))
 (defparameter *shadow-mul* 0.75)
 
 (defstruct surface color)
@@ -22,6 +25,26 @@
   maxx maxy maxz
   left right
   objects)
+
+(defun scale-color (c s)
+  (list (* (first c) s)
+        (* (second c) s)
+        (* (third c) s)))
+
+(defun add-color (a b)
+  (list (+ (first a) (first b))
+        (+ (second a) (second b))
+        (+ (third a) (third b))))
+
+(defun clamp01 (x)
+  (cond ((< x 0.0d0) 0.0d0)
+        ((> x 1.0d0) 1.0d0)
+        (t x)))
+
+(defun clamp-color (c)
+  (list (clamp01 (first c))
+        (clamp01 (second c))
+        (clamp01 (third c))))
 
 (defun sphere-bbox (s)
   (let* ((c (sphere-center s))
@@ -210,23 +233,40 @@
   (values *vogel-cache-dxs* *vogel-cache-dzs*))
 
 (defun tracer (pathname &optional (res 1))
-  (with-open-file (p pathname :direction :output)
-    (format p "P2 ~A ~A 255" (* res 100) (* res 100))
+  (with-open-file (p pathname :direction :output :if-exists :supersede)
+
+    ;; ★ PPM (P3)
+    (format p "P3~%~A ~A~%255~%" (* res 100) (* res 100))
+
     (ensure-bvh)
+
     (let* ((n (* res 100))
            (inc (/ 1.0d0 res)))
       (dotimes (iy n)
-	(let ((y (+ -50.0d0 (* iy inc))))
-	  (dotimes (ix n)
-	    (let ((x (+ -50.0d0 (* ix inc))))
-	      (print (color-at x y) p))))))))
+        (let ((y (+ -50.0d0 (* iy inc))))
+          (dotimes (ix n)
+            (let ((x (+ -50.0d0 (* ix inc))))
+              
+              ;; ★ ここが重要
+              (multiple-value-bind (r g b)
+                  (color-at x y)
+                (format p "~d ~d ~d~%" r g b)))))))))
 
 (defun color-at (x y)
   (multiple-value-bind (xr yr zr)
       (unit-vector (- x (x eye))
                    (- y (y eye))
                    (- 0 (z eye)))
-    (round (* (sendray eye xr yr zr) 255))))
+    (multiple-value-bind (r g b)
+        (sendray eye xr yr zr)
+      
+      ;; ★ デバッグ出力
+      (when (and (> x -10) (< x 10) (> y 290) (< y 310))
+        (format t "~%DEBUG RGB: ~A ~A ~A~%" r g b))
+      
+      (values (round (* 255 (clamp01 r)))
+              (round (* 255 (clamp01 g)))
+              (round (* 255 (clamp01 b)))))))
 
 (defparameter *max-depth* 3)
 
@@ -234,66 +274,105 @@
   (multiple-value-bind (s int) (first-hit pt xr yr zr)
     (if s
         (multiple-value-bind (xn yn zn) (normal s int)
-          ;; --- ベース光（ここにスペキュラを残す） ---
-          (let* ((sf (shadow-factor s int))
-		 (diff (* sf
-                          (lambert s int)))
-                 (spec (* 0.6
-			  sf
-                          (specular s int xr yr zr)))
+
+          (let* (
+                 ;; =========================
+                 ;; ライティング（重要）
+                 ;; =========================
+
+                 (sf (shadow-factor s int))
+
+                 ;; 拡散光
+                 (diff (* sf (lambert s int)))
+
+                 ;; スペキュラ
+                 (spec (* 1.5 sf (specular s int xr yr zr)))
+
+                 ;; ベース光量
                  (base (+ *ambient* (* 0.7 diff) spec))
 
-                 ;; --- 反射 ---
-                 (refl (or (and (slot-exists-p s 'reflectivity)
-                                (sphere-reflectivity s))
+                 ;; =========================
+                 ;; マテリアル色
+                 ;; =========================
+
+                 (col (ensure-rgb (surface-color s)))
+                 (base-color (scale-color col base))
+
+                 ;; 反射率
+                 (refl (if (slot-exists-p s 'reflectivity)
+                           (sphere-reflectivity s)
                            0.0))
 
-                 ;; 法線方向にオフセット（自己交差防止）
-                 (eps 0.001)
-                 (offset (make-point :x (+ (x int) (* xn eps))
-                                     :y (+ (y int) (* yn eps))
-                                     :z (+ (z int) (* zn eps))))
+                 ;; =========================
+                 ;; 反射（再帰）
+                 ;; =========================
 
-		 (refc
-		   (if (and (> refl 0.0) (< depth *max-depth*))
-		       (let ((acc 0.0) (blur (* refl 0.7)))
-			 (dotimes (i 4)   ;; ← 2 → 4
-			   (multiple-value-bind (rx ry rz)
-			       (reflect-dir xr yr zr xn yn zn)
-			     (multiple-value-bind (rx2 ry2 rz2)
-				 (unit-vector
-				  (perturb rx blur)
-				  (perturb ry blur)
-				  (perturb rz blur))
-			       (incf acc
-				     (sendray offset rx2 ry2 rz2 (1+ depth))))))
-			 (/ acc 4))
-		       0.0))
-                 ;; --- 合成：加算ブレンド ---
-                 ;; 反射を「足す」。ただし全体はクランプ
-                 (c (min 1.0 (+ base
-				(* refl refc)))))
-            (* c (surface-color s))))
-        0)))
+                 (refc
+                  (if (and (> refl 0.0) (< depth *max-depth*))
+                      (let* ((eps 0.001)
+                             (offset (make-point
+                                      :x (+ (x int) (* xn eps))
+                                      :y (+ (y int) (* yn eps))
+                                      :z (+ (z int) (* zn eps))))
+                             (rx 0.0) (ry 0.0) (rz 0.0))
+
+                        (multiple-value-setq (rx ry rz)
+                          (reflect-dir xr yr zr xn yn zn))
+
+                        ;; 再帰反射
+                        (multiple-value-bind (rr rg rb)
+                            (sendray offset rx ry rz (1+ depth))
+
+                          ;; 輝度化
+                          (let ((lum (* 0.333 (+ rr rg rb))))
+                            (list lum lum lum))))
+
+                      '(0.0 0.0 0.0)))
+
+                 ;; =========================
+                 ;; 合成
+                 ;; =========================
+
+                 (final
+                  (add-color base-color
+                             (scale-color refc (* refl 1.5)))))
+
+            ;; clampして返す
+            (let ((c (clamp-color final)))
+              (values (first c)
+                      (second c)
+                      (third c)))))
+
+        ;; 背景
+        (values 0.0d0 0.0d0 0.0d0))))
 
 (defun first-hit (pt xr yr zr)
   (ensure-bvh)
+
   (multiple-value-bind (surface tmin)
       (if *bvh-root*
-	  (bvh-first-hit pt xr yr zr)
-	  (let (surface tmin)
-	    (dolist (s *world*)
-	      (let ((tt (intersect s pt xr yr zr)))
-		(when tt
-		  (when (or (null tmin) (< tt tmin))
-		    (setf surface s tmin tt)))))
-	    (values surface tmin)))
+          ;; BVHあり
+          (bvh-first-hit pt xr yr zr)
+
+          ;; 総当たり
+          (let (surface tmin)
+            (dolist (s *world*)
+              (let ((tt (intersect s pt xr yr zr)))
+                (when tt
+                  (when (or (null tmin)
+                            (< tt tmin))
+                    (setf surface s
+                          tmin tt)))))
+            (values surface tmin)))
+
+    ;; ヒット結果
     (if surface
-	(values surface
-		(make-point :x (+ (x pt) (* tmin xr))
-			    :y (+ (y pt) (* tmin yr))
-			    :z (+ (z pt) (* tmin zr))))
-	(values nil nil))))
+        (values surface
+                (make-point
+                 :x (+ (x pt) (* tmin xr))
+                 :y (+ (y pt) (* tmin yr))
+                 :z (+ (z pt) (* tmin zr))))
+        (values nil nil))))
 
 (defun first-hit-t (pt xr yr zr &optional ignore-surface)
   (let (surface tmin)
@@ -394,8 +473,11 @@
         (let* ((vdot (max 0 (+ (* rx (- xr))
                                (* ry (- yr))
                                (* rz (- zr)))))
-               (shininess 8))   ;; ←下げる
-          (expt vdot shininess))))))
+               ;; ★ 変更：expt → 手展開（^8）
+               (x (* vdot vdot))     ;; v^2
+               (x2 (* x x))          ;; v^4
+               (x4 (* x2 x2)))       ;; v^8
+          x4)))))
 
 (defun reflect-dir (ix iy iz nx ny nz)
   ;; R = I - 2 (I·N) N
@@ -406,3 +488,17 @@
 
 (defun perturb (x scale)
   (+ x (* scale (- (random 1.0) 0.5))))
+
+(defun ensure-rgb (c)
+  (cond
+    ;; すでにRGBリスト
+    ((and (listp c) (= (length c) 3))
+     c)
+
+    ;; スカラー → グレー化
+    ((numberp c)
+     (list c c c))
+
+    ;; それ以外（保険）
+    (t
+     (list 1.0 0.0 1.0))))  ;; マゼンタ（異常検知用）

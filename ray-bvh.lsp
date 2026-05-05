@@ -10,9 +10,16 @@
     (values (- (x c) r) (- (y c) r) (- (z c) r)
 	    (+ (x c) r) (+ (y c) r) (+ (z c) r))))
 
+(defun plane-bbox (p)
+  (let* ((c (plane-point p))
+	 (hs (plane-half-size p)))
+    (values (- (x c) hs) (- (y c) 0.01) (- (z c) hs)
+	    (+ (x c) hs) (+ (y c) 0.01) (+ (z c) hs))))
+
 (defun surface-bbox (s)
   (typecase s
-    (sphere (sphere-bbox s))))
+    (sphere (sphere-bbox s))
+    (plane (plane-bbox s))))
 
 (defun bvh-merge-bbox (ax ay az bx by bz cx cy cz dx dy dz)
   (values (min ax bx cx dx)
@@ -37,7 +44,9 @@
     (values minx miny minz maxx maxy maxz)))
 
 (defun bvh-surface-center-axis (s axis)
-  (let ((c (sphere-center s)))
+  (let ((c (typecase s
+	     (sphere (sphere-center s))
+	     (plane (plane-point s)))))
     (ecase axis
       (0 (x c))
       (1 (y c))

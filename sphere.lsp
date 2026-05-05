@@ -14,7 +14,9 @@
       s)))
 
 (defun intersect (s pt xr yr zr)
-  (sphere-intersect s pt xr yr zr))
+  (typecase s
+    (sphere (sphere-intersect s pt xr yr zr))
+    (plane (plane-intersect s pt xr yr zr))))
 
 (defun sphere-intersect (s pt xr yr zr)
   (let* ((c (sphere-center s)))
@@ -29,7 +31,9 @@
         (* (sphere-radius s) (sphere-radius s))))))
 
 (defun normal (s pt)
-  (sphere-normal s pt))
+  (typecase s
+    (sphere (sphere-normal s pt))
+    (plane (plane-normal s pt))))
 
 (defun sphere-normal (s pt)
   (let ((c (sphere-center s)))

@@ -34,6 +34,17 @@
               (round (* 255 (clamp01 g)))
               (round (* 255 (clamp01 b)))))))
 
+(defun surface-color-at (s int)
+  (typecase s
+    (plane (plane-color-at s int))
+    (t (surface-color s))))
+
+(defun surface-reflectivity (s)
+  (typecase s
+    (sphere (sphere-reflectivity s))
+    (plane (plane-reflectivity s))
+    (t 0.0)))
+
 (defparameter *max-depth* 3)
 
 (defun sendray (pt xr yr zr &optional (depth 0))
@@ -61,13 +72,11 @@
                  ;; マテリアル色
                  ;; =========================
 
-                 (col (ensure-rgb (surface-color s)))
+                 (col (ensure-rgb (surface-color-at s int)))
                  (base-color (scale-color col base))
 
                  ;; 反射率
-                 (refl (if (slot-exists-p s 'reflectivity)
-                           (sphere-reflectivity s)
-                           0.0))
+                 (refl (surface-reflectivity s))
 
                  ;; =========================
                  ;; 反射（再帰）

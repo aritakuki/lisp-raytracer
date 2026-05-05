@@ -20,6 +20,7 @@
 (defparameter *bvh-world* nil)
 (defparameter *surface-id* nil)
 
+(load (merge-pathnames "plane.lsp" *load-truename*))
 (load (merge-pathnames "ray-color.lsp" *load-truename*))
 (load (merge-pathnames "ray-bvh.lsp" *load-truename*))
 (load (merge-pathnames "ray-lighting.lsp" *load-truename*))

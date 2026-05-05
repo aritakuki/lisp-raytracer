@@ -3,6 +3,13 @@
 (defun ray-test (&optional (res 1))
   (setf *world* nil)
 
+(setf *camera*
+      (make-camera
+       :eye (make-point :x 550 :y -380 :z 650)
+       :lookat (make-point :x 0 :y 160 :z -1200)
+       :up (make-point :x 0 :y -1 :z 0)
+       :fov-deg 28.0d0))
+
   (defplane 0 500 -1400
             0.0 -1.0 0.0
             2500

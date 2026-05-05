@@ -11,6 +11,16 @@
 (defparameter *world* nil)
 (defconstant eye (make-point :x 0 :y 0 :z 200))
 
+(defstruct camera
+  eye lookat up fov-deg)
+
+(defparameter *camera*
+  (make-camera
+   :eye eye
+   :lookat (make-point :x 0 :y 0 :z 0)
+   :up (make-point :x 0 :y -1 :z 0)
+   :fov-deg 60.0d0))
+
 (defparameter *vogel-cache-dxs* nil)
 (defparameter *vogel-cache-dzs* nil)
 (defparameter *vogel-cache-samples* nil)

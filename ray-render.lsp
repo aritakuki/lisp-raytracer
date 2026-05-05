@@ -1,19 +1,31 @@
+(defparameter *sky-yr-min* 0.0d0)
+(defparameter *sky-yr-max* 1.0d0)
+
+(defun update-sky-range ()
+  ;; 画面上端
+  (multiple-value-bind (xr1 yr1 zr1)
+      (camera-ray 0.0d0 1.0d0)
+
+    ;; 画面中央
+    (multiple-value-bind (xr2 yr2 zr2)
+        (camera-ray 0.0d0 0.0d0)
+
+      ;; 上の方を空とみなす
+      (setf *sky-yr-min* (min yr1 yr2)
+            *sky-yr-max* (max yr1 yr2)))))
+
 (defun tracer (pathname &optional (res 1))
   (with-open-file (p pathname :direction :output :if-exists :supersede)
-
-    ;; ★ PPM (P3)
+    (update-sky-range)   ;; ← これ追加
     (format p "P3~%~A ~A~%255~%" (* res 100) (* res 100))
-
     (ensure-bvh)
-
     (let* ((n (* res 100))
            (invn (/ 1.0d0 n)))
       (dotimes (iy n)
         (let ((sy (- 1.0d0 (* 2.0d0 (* (+ iy 0.5d0) invn)))))
           (dotimes (ix n)
-            (let ((sx (- (* 2.0d0 (* (+ ix 0.5d0) invn)) 1.0d0)))
-              (multiple-value-bind (r g b)
-                  (color-at sx sy)
+(let ((sx (- (* 2.0d0 (* (+ ix 0.5d0) invn)) 1.0d0)))
+              (multiple-value-bind (r g b) (color-at sx sy)
                 (format p "~d ~d ~d~%" r g b)))))))))
 
 (defun v- (ax ay az bx by bz)
@@ -65,6 +77,8 @@
 (defun color-at (x y)
   (multiple-value-bind (xr yr zr)
       (camera-ray x y)
+    ;; ★ これを追加（デバッグ）
+;    (format t "~%yr=~A~%" yr)
     (multiple-value-bind (r g b)
         (sendray (camera-eye *camera*) xr yr zr)
       
@@ -118,7 +132,13 @@
                  (base-color (scale-color col base))
 
                  ;; 反射率
-                 (refl (surface-reflectivity s))
+                 (base-refl (surface-reflectivity s))
+                 (vdot (max 0.0d0 (+ (* (- xr) xn)
+                                     (* (- yr) yn)
+                                     (* (- zr) zn))))
+                 (refl (+ base-refl
+                          (* (- 1.0d0 base-refl)
+                             (expt (- 1.0d0 vdot) 5))))
 
                  ;; =========================
                  ;; 反射（再帰）
@@ -152,7 +172,7 @@
 
                  (final
                   (add-color base-color
-                             (scale-color refc (* refl 1.5)))))
+                             (scale-color refc refl))))
 
             ;; clampして返す
             (let ((c (clamp-color final)))
@@ -160,8 +180,19 @@
                       (second c)
                       (third c)))))
 
-        ;; 背景
-        (values 0.0d0 0.0d0 0.0d0))))
+        ;; 背景（空グラデーション）
+        (let* ((sky-t (clamp01
+                      (/ (- yr *sky-yr-min*)
+                          (- *sky-yr-max* *sky-yr-min*))))
+
+              ;; ★ 勾配を強調（ここが本質）
+              (sky-t (expt sky-t 0.3d0)))   ;; ← 0.3が強め
+
+          (values
+            (+ (* (- 1.0d0 sky-t) 1.0d0) (* sky-t 0.2d0))  ;; 赤弱め
+            (+ (* (- 1.0d0 sky-t) 1.0d0) (* sky-t 0.5d0))  ;; 緑中
+            (+ (* (- 1.0d0 sky-t) 1.0d0) (* sky-t 1.0d0)))) ;; 青強
+            )))
 
 (defun first-hit (pt xr yr zr)
   (ensure-bvh)

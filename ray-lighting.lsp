@@ -1,3 +1,23 @@
+(defun refract-dir (ix iy iz nx ny nz eta)
+  ;; I, N は正規化済み前提
+
+  (let* ((dot (+ (* ix nx) (* iy ny) (* iz nz)))
+         (cosi (- dot))
+         (sin2t (* eta eta (- 1.0d0 (* cosi cosi)))))
+
+    (if (> sin2t 1.0d0)
+        ;; 全反射
+        (values nil nil nil)
+
+        ;; 屈折方向（★正規化する）
+        (let* ((cost (sqrt (- 1.0d0 sin2t)))
+               (a eta)
+               (b (- (* eta cosi) cost))
+               (tx (+ (* a ix) (* b nx)))
+               (ty (+ (* a iy) (* b ny)))
+               (tz (+ (* a iz) (* b nz))))
+          (unit-vector tx ty tz)))))
+
 (defun lambert (s int)
   (multiple-value-bind (xn yn zn) (normal s int)
     (multiple-value-bind (lx ly lz)

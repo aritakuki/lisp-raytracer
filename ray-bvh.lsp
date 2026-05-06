@@ -115,7 +115,7 @@
 		      (when (<= tmin tmax)
 			(values tmin tmax)))))))))))
 
-(defun bvh-first-hit (pt xr yr zr)
+(defun bvh-first-hit (pt xr yr zr ignore-surface)
   (let ((best-s nil)
 	(best-t nil)
 	(best-id nil)
@@ -130,6 +130,7 @@
             (let ((objs (bvh-node-objects node)))
               (if objs
                   (dolist (s objs)
+		    (unless (eq s ignore-surface)
                     (let ((tt (intersect s pt xr yr zr)))
                       (when tt
                         (let ((sid (gethash s *surface-id*)))
@@ -138,7 +139,7 @@
                                     (and best-id (= tt best-t) (< sid best-id)))
                             (setf best-s s
                                   best-t tt
-                                  best-id sid))))))
+                                  best-id sid)))))))
                   (let ((l (bvh-node-left node))
                         (r (bvh-node-right node)))
                     (cond

@@ -1,15 +1,16 @@
 (load (merge-pathnames "ray.lsp" *load-truename*))
 
 (defstruct (sphere (:include surface))
-  radius center reflectivity)
+  radius center reflectivity ior)
 
-(defun defsphere (x y z r c &optional (refl 0.1))
-  (let ((col (if (listp c) c (list c c c)))) ;; ★追加
+(defun defsphere (x y z r c &optional (refl 0.1) (ior 1.5))
+  (let ((col (if (listp c) c (list c c c))))
     (let ((s (make-sphere
               :radius r
               :center (make-point :x x :y y :z z)
               :color col
-              :reflectivity refl)))
+              :reflectivity refl
+              :ior ior)))
       (push s *world*)
       s)))
 

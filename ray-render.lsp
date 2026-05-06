@@ -103,35 +103,27 @@
 
 (defparameter *max-depth* 3)
 
-(defun sendray (pt xr yr zr &optional (depth 0))
-  (multiple-value-bind (s int) (first-hit pt xr yr zr)
+(defun sendray (pt xr yr zr &optional (depth 0) ignore)
+  (multiple-value-bind (s int) (first-hit pt xr yr zr ignore)
     (if s
         (multiple-value-bind (xn yn zn) (normal s int)
 
           (let* (
-                 ;; =========================
-                 ;; ライティング（重要）
-                 ;; =========================
+                 ;; 材質
+                 (ior (or (ignore-errors (sphere-ior s)) 0.0))
+                 (is-glass (> ior 1.01))
 
+                 ;; ライティング
                  (sf (shadow-factor s int))
-
-                 ;; 拡散光
                  (diff (* sf (lambert s int)))
-
-                 ;; スペキュラ
                  (spec (* 1.5 sf (specular s int xr yr zr)))
-
-                 ;; ベース光量
                  (base (+ *ambient* (* 0.7 diff) spec))
 
-                 ;; =========================
-                 ;; マテリアル色
-                 ;; =========================
-
+                 ;; 色
                  (col (ensure-rgb (surface-color-at s int)))
                  (base-color (scale-color col base))
 
-                 ;; 反射率
+                 ;; フレネル
                  (base-refl (surface-reflectivity s))
                  (vdot (max 0.0d0 (+ (* (- xr) xn)
                                      (* (- yr) yn)
@@ -141,79 +133,109 @@
                              (expt (- 1.0d0 vdot) 5))))
 
                  ;; =========================
-                 ;; 反射（再帰）
+                 ;; 反射
                  ;; =========================
-
                  (refc
-                  (if (and (> refl 0.0) (< depth *max-depth*))
+                  (if (< depth *max-depth*)
                       (let* ((eps 0.001)
                              (offset (make-point
                                       :x (+ (x int) (* xn eps))
                                       :y (+ (y int) (* yn eps))
                                       :z (+ (z int) (* zn eps))))
                              (rx 0.0) (ry 0.0) (rz 0.0))
-
                         (multiple-value-setq (rx ry rz)
                           (reflect-dir xr yr zr xn yn zn))
-
-                        ;; 再帰反射
                         (multiple-value-bind (rr rg rb)
-                            (sendray offset rx ry rz (1+ depth))
+                            (sendray offset rx ry rz (1+ depth) s)
+                          (list rr rg rb)))
+                      '(0.0 0.0 0.0)))
 
-                          ;; 輝度化
-                          (let ((lum (* 0.333 (+ rr rg rb))))
-                            (list lum lum lum))))
+                 ;; =========================
+                 ;; 屈折（超安全版）
+                 ;; =========================
+                 (refrc
+                  (if (and is-glass (< depth *max-depth*))
+                      (let* ((into (< (+ (* xr xn) (* yr yn) (* zr zn)) 0.0d0))
+                             (n1 (if into 1.0d0 ior))
+                             (n2 (if into ior 1.0d0))
+                             (eta (/ n1 n2))
+                             (nx2 (if into xn (- xn)))
+                             (ny2 (if into yn (- yn)))
+                             (nz2 (if into zn (- zn))))
 
+                        (multiple-value-bind (tx ty tz)
+                            (refract-dir xr yr zr nx2 ny2 nz2 eta)
+
+                          (if tx
+                              (let* ((eps 0.01)
+                                     (offset (make-point
+					      :x (+ (x int) (* tx eps))
+					      :y (+ (y int) (* ty eps))
+					      :z (+ (z int) (* tz eps))
+					      )))
+                                (multiple-value-bind (rr rg rb)
+                                    (sendray offset tx ty tz (1+ depth) s)
+                                  (list rr rg rb)))
+
+                              ;; ★ここが重要：黒にしない
+                              refc)))
                       '(0.0 0.0 0.0)))
 
                  ;; =========================
                  ;; 合成
                  ;; =========================
+		 (final
+		   (if is-glass
+		     (let ((trans 0.3d0))  ;; ←調整パラメータ（0.4〜0.7推奨）
+		       (add-color
+			 ;; ベース色を残す（これが最重要）
+			 (scale-color base-color (- 1.0d0 trans))
 
-                 (final
-                  (add-color base-color
-                             (scale-color refc refl))))
+			 ;; 反射＋屈折を混ぜる
+			 (scale-color
+			   (add-color
+			     (scale-color refc refl)
+			     (scale-color refrc (- 1.0d0 refl)))
+			   trans)))
 
-            ;; clampして返す
-            (let ((c (clamp-color final)))
+		     ;; 非ガラス（そのまま）
+		     (add-color
+		       base-color
+		       (scale-color refc refl)))))
+
+	    (let ((c (clamp-color final)))
               (values (first c)
                       (second c)
                       (third c)))))
 
-        ;; 背景（空グラデーション）
+        ;; 背景
         (let* ((sky-t (clamp01
-                      (/ (- yr *sky-yr-min*)
+                       (/ (- yr *sky-yr-min*)
                           (- *sky-yr-max* *sky-yr-min*))))
-
-              ;; ★ 勾配を強調（ここが本質）
-              (sky-t (expt sky-t 0.3d0)))   ;; ← 0.3が強め
-
+               (sky-t (expt sky-t 0.3d0)))
           (values
-            (+ (* (- 1.0d0 sky-t) 1.0d0) (* sky-t 0.2d0))  ;; 赤弱め
-            (+ (* (- 1.0d0 sky-t) 1.0d0) (* sky-t 0.5d0))  ;; 緑中
-            (+ (* (- 1.0d0 sky-t) 1.0d0) (* sky-t 1.0d0)))) ;; 青強
-            )))
+           (+ (* (- 1.0d0 sky-t) 1.0d0) (* sky-t 0.2d0))
+           (+ (* (- 1.0d0 sky-t) 1.0d0) (* sky-t 0.5d0))
+           (+ (* (- 1.0d0 sky-t) 1.0d0) (* sky-t 1.0d0)))))))
 
-(defun first-hit (pt xr yr zr)
+(defun first-hit (pt xr yr zr &optional ignore-surface)
   (ensure-bvh)
 
   (multiple-value-bind (surface tmin)
       (if *bvh-root*
-          ;; BVHあり
-          (bvh-first-hit pt xr yr zr)
+          (bvh-first-hit pt xr yr zr ignore-surface)
 
-          ;; 総当たり
           (let (surface tmin)
             (dolist (s *world*)
-              (let ((tt (intersect s pt xr yr zr)))
-                (when tt
-                  (when (or (null tmin)
-                            (< tt tmin))
-                    (setf surface s
-                          tmin tt)))))
+              (unless (eq s ignore-surface)
+                (let ((tt (intersect s pt xr yr zr)))
+                  (when tt
+                    (when (or (null tmin)
+                              (< tt tmin))
+                      (setf surface s
+                            tmin tt))))))
             (values surface tmin)))
 
-    ;; ヒット結果
     (if surface
         (values surface
                 (make-point

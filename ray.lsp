@@ -35,3 +35,4 @@
 (load (merge-pathnames "ray-bvh.lsp" *load-truename*))
 (load (merge-pathnames "ray-lighting.lsp" *load-truename*))
 (load (merge-pathnames "ray-render.lsp" *load-truename*))
+(load (merge-pathnames "ray-material.lsp" *load-truename*))

@@ -3,4 +3,5 @@
 *.png
 *.fasl
 *.lisp-temp
+*.swp
 *~

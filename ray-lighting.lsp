@@ -1,3 +1,11 @@
+(defun shade-local (s int xr yr zr)
+  (let* ((sf (shadow-factor s int))
+         (diff (* sf (lambert s int)))
+         (spec (* 1.5 sf (specular s int xr yr zr)))
+         (base (+ *ambient* (* 0.7 diff) spec))
+         (col (ensure-rgb (surface-color-at s int))))
+    (scale-color col base)))
+
 (defun refract-dir (ix iy iz nx ny nz eta)
   ;; I, N は正規化済み前提
 

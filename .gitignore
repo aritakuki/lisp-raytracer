@@ -4,4 +4,6 @@
 *.fasl
 *.lisp-temp
 *.swp
+*.gif
+*.mp4
 *~

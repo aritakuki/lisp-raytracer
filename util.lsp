@@ -42,3 +42,15 @@
               (r1 r1)
               (r2 r2)
               (t nil))))))
+
+(defun exp-decay (color dist absorption)
+  ;; color: (r g b)
+  ;; absorption: (r g b) 各チャンネルの吸収率
+
+  (list
+   (* (first color)
+      (exp (- (* dist (first absorption)))))
+   (* (second color)
+      (exp (- (* dist (second absorption)))))
+   (* (third color)
+      (exp (- (* dist (third absorption)))))))

@@ -1,0 +1,10 @@
+(dotimes (frame 60)
+  (format t "Rendering frame ~A...~%" frame)
+  (ray-test-animated frame 10))
+
+
+# ImageMagick を使う場合
+convert -delay 10 spheres_frame_*.ppm output.gif
+
+# FFmpeg を使う場合
+ffmpeg -framerate 30 -i spheres_frame_%03d.ppm -c:v libx264 -pix_fmt yuv420p output.mp4

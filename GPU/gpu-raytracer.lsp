@@ -1,52 +1,9 @@
-#!/bin/bash
-# run.sh
-# Shell script to run the Common Lisp GPU raytracer in Google Colab
-
-export CPATH=/usr/local/cuda/include
-export LIBRARY_PATH=/usr/local/cuda/lib64
-export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
-export PATH=$PATH:/usr/local/cuda/bin
-
-# 1. Automatically install SBCL and libffi-dev if missing
-if ! command -v sbcl &> /dev/null; then
-    echo "=== Installing SBCL & dependencies ==="
-    sudo apt-get update && sudo apt-get install -y sbcl libffi-dev
-fi
-
-# 2. Automatically install Quicklisp if missing
-if [ ! -f ~/quicklisp/setup.lisp ]; then
-    echo "=== Installing Quicklisp ==="
-    curl -O https://beta.quicklisp.org/quicklisp.lisp
-    sbcl --non-interactive --load quicklisp.lisp --eval "(quicklisp-quickstart:install)"
-    rm quicklisp.lisp
-fi
-
-# 3. Pre-load cl-cuda to ensure Quicklisp installs it
-echo "=== Loading cl-cuda ==="
-sbcl --non-interactive --load ~/quicklisp/setup.lisp --eval "(ql:quickload :cl-cuda)"
-
-
-# Automatically write the correct version of gpu-raytracer.lsp
-cat << 'EOF' > gpu-raytracer.lsp
 ;;;; gpu-raytracer.lsp
 ;;;; Common Lisp GPU Raytracer using cl-cuda
 
 (declaim (optimize (speed 3) (safety 0) (debug 0)))
 
-;; Load cl-cuda
-(ql:quickload :cl-cuda)
-
-;; Define a separate package to avoid conflicts with SB-ALIEN:INT and CL:FLOAT
-(defpackage :gpu-raytracer
-  (:use :cl)
-  (:import-from :cl-cuda
-                :defkernel
-                :with-cuda
-                :with-memory-blocks
-                :memory-block-aref
-                :sync-memory-block
-                :void :float* :int* :int)
-  (:export :run-gpu-raytracer))
+(load (merge-pathnames "gpu-package.lsp" *load-truename*))
 
 (in-package :gpu-raytracer)
 
@@ -155,6 +112,39 @@ cat << 'EOF' > gpu-raytracer.lsp
                                      (if (<= abs-iz-sh-diff 2500.0f0)
                                          (set ,blocked 1)))))))))))))
 
+  ;; CPU surface-color-at, surface-reflectivity, and normal, in one GPU template.
+  ;; Every ray depth must use this template rather than its own copy.
+  (defun make-load-surface-data (hit-type hit-idx hit-x hit-y hit-z
+                                  nx ny nz col-r col-g col-b refl-base)
+    `(if (= ,hit-type 1)
+         (let* ((cx (aref sphere-cx ,hit-idx))
+                (cy (aref sphere-cy ,hit-idx))
+                (cz (aref sphere-cz ,hit-idx))
+                (r (aref sphere-r ,hit-idx))
+                (inv-r (/ 1.0f0 r)))
+           (set ,nx (* (- ,hit-x cx) inv-r))
+           (set ,ny (* (- ,hit-y cy) inv-r))
+           (set ,nz (* (- ,hit-z cz) inv-r))
+           (set ,col-r (aref sphere-col-r ,hit-idx))
+           (set ,col-g (aref sphere-col-g ,hit-idx))
+           (set ,col-b (aref sphere-col-b ,hit-idx))
+           (set ,refl-base (aref sphere-refl ,hit-idx)))
+         (progn
+           (set ,nx 0.0f0)
+           (set ,ny -1.0f0)
+           (set ,nz 0.0f0)
+           (let* ((x-div (/ ,hit-x 140.0f0))
+                  (z-div (/ (- ,hit-z -1400.0f0) 140.0f0))
+                  (ix (floor x-div))
+                  (iz (floor z-div))
+                  (sum (+ ix iz))
+                  (div2 (* sum 0.5f0))
+                  (is-even (< (- div2 (floor div2)) 0.25f0)))
+             (if is-even
+                 (progn (set ,col-r 0.9f0) (set ,col-g 0.9f0) (set ,col-b 0.9f0))
+                 (progn (set ,col-r 0.2f0) (set ,col-g 0.2f0) (set ,col-b 0.2f0))))
+           (set ,refl-base 0.05f0))))
+
   (defun make-compute-shading (ox oy oz dx dy dz hit-t hit-type hit-idx r-val g-val b-val refl-val)
     `(let* ((hit-x (+ ,ox (* ,hit-t ,dx)))
             (hit-y (+ ,oy (* ,hit-t ,dy)))
@@ -162,36 +152,8 @@ cat << 'EOF' > gpu-raytracer.lsp
             (nx 0.0f0) (ny 0.0f0) (nz 0.0f0)
             (col-r 0.0f0) (col-g 0.0f0) (col-b 0.0f0)
             (refl-base 0.0f0))
-       (if (= ,hit-type 1)
-           ;; Sphere normal
-           (let* ((cx (aref sphere-cx ,hit-idx))
-                  (cy (aref sphere-cy ,hit-idx))
-                  (cz (aref sphere-cz ,hit-idx))
-                  (r (aref sphere-r ,hit-idx))
-                  (inv-r (/ 1.0f0 r)))
-             (set nx (* (- hit-x cx) inv-r))
-             (set ny (* (- hit-y cy) inv-r))
-             (set nz (* (- hit-z cz) inv-r))
-             (set col-r (aref sphere-col-r ,hit-idx))
-             (set col-g (aref sphere-col-g ,hit-idx))
-             (set col-b (aref sphere-col-b ,hit-idx))
-             (set refl-base (aref sphere-refl ,hit-idx)))
-           ;; Checker plane normal
-           (progn
-             (set nx 0.0f0)
-             (set ny -1.0f0)
-             (set nz 0.0f0)
-             (let* ((x-div (/ hit-x 140.0f0))
-                    (z-div (/ (- hit-z -1400.0f0) 140.0f0))
-                    (ix (floor x-div))
-                    (iz (floor z-div))
-                    (sum (+ ix iz))
-                    (div2 (* sum 0.5f0))
-                    (is-even (< (- div2 (floor div2)) 0.25f0)))
-               (if is-even
-                   (progn (set col-r 0.9f0) (set col-g 0.9f0) (set col-b 0.9f0))
-                   (progn (set col-r 0.2f0) (set col-g 0.2f0) (set col-b 0.2f0))))
-             (set refl-base 0.05f0)))
+       ,(make-load-surface-data hit-type hit-idx 'hit-x 'hit-y 'hit-z
+                                 'nx 'ny 'nz 'col-r 'col-g 'col-b 'refl-base)
        
        ;; Soft Shadow (Vogel Sampling 64 points)
        (let ((shadowed-sum 0.0f0))
@@ -257,6 +219,7 @@ cat << 'EOF' > gpu-raytracer.lsp
                 ;; Fresnel reflectivity calculation
                 (dot-v-n (+ (* (- ,dx) nx) (* (- ,dy) ny) (* (- ,dz) nz)))
                 (vdot-refl (if (> dot-v-n 0.0f0) dot-v-n 0.0f0))
+                ;; Kept textually equivalent to CPU/sendray.
                 (fresnel-refl (+ refl-base (* (- 1.0f0 refl-base) (expt (- 1.0f0 vdot-refl) 5.0f0)))))
            
            (set ,r-val (* col-r base))
@@ -265,6 +228,7 @@ cat << 'EOF' > gpu-raytracer.lsp
            (set ,refl-val fresnel-refl)))))
 
   (defun make-compute-sky-color (dy r-val g-val b-val)
+    ;; Same sky gradient as CPU/sendray.
     `(let* ((sky-t (if (< ,dy sky-yr-min)
                        0.0f0
                        (if (> ,dy sky-yr-max)
@@ -289,9 +253,23 @@ cat << 'EOF' > gpu-raytracer.lsp
          (set ,oy (+ ,hit-y (* ,ny 0.001f0)))
          (set ,oz (+ ,hit-z (* ,nz 0.001f0))))))
 
+  (defun make-clamp-rgb (source-r source-g source-b out-r out-g out-b)
+    `(progn
+       (set ,out-r (if (< ,source-r 0.0f0) 0.0f0 (if (> ,source-r 1.0f0) 1.0f0 ,source-r)))
+       (set ,out-g (if (< ,source-g 0.0f0) 0.0f0 (if (> ,source-g 1.0f0) 1.0f0 ,source-g)))
+       (set ,out-b (if (< ,source-b 0.0f0) 0.0f0 (if (> ,source-b 1.0f0) 1.0f0 ,source-b)))))
+
+  ;; CPU: base-color + reflectivity * grayscale(reflected-color).
+  (defun make-compose-reflection (base-r base-g base-b refl child-r child-g child-b out-r out-g out-b)
+    `(let* ((lum (* 0.333f0 (+ (+ ,child-r ,child-g) ,child-b)))
+            (final-r (+ ,base-r (* ,refl lum)))
+            (final-g (+ ,base-g (* ,refl lum)))
+            (final-b (+ ,base-b (* ,refl lum))))
+       ,(make-clamp-rgb 'final-r 'final-g 'final-b out-r out-g out-b)))
+
 ;; GPU Raytracer Kernel definition utilizing code templates to expand exactly 3 recursion levels.
 (eval
-  `(defkernel raytrace-kernel-v6 (void ((out-r float*) (out-g float*) (out-b float*)
+  `(defkernel raytrace-kernel-v7 (void ((out-r float*) (out-g float*) (out-b float*)
                                     (width int) (height int)
                                     (width-f cl-cuda:float) (height-f cl-cuda:float)
                                     (sphere-cx float*) (sphere-cy float*) (sphere-cz float*)
@@ -345,35 +323,9 @@ cat << 'EOF' > gpu-raytracer.lsp
                               (col-r0 0.0f0) (col-g0 0.0f0) (col-b0 0.0f0)
                               (refl-base0 0.0f0))
                          
-                         ;; normal and material info
-                         (if (= type0 1)
-                             (let* ((cx (aref sphere-cx idx0))
-                                    (cy (aref sphere-cy idx0))
-                                    (cz (aref sphere-cz idx0))
-                                    (r (aref sphere-r idx0))
-                                    (inv-r (/ 1.0f0 r)))
-                               (set nx0 (* (- hit-x0 cx) inv-r))
-                               (set ny0 (* (- hit-y0 cy) inv-r))
-                               (set nz0 (* (- hit-z0 cz) inv-r))
-                               (set col-r0 (aref sphere-col-r idx0))
-                               (set col-g0 (aref sphere-col-g idx0))
-                               (set col-b0 (aref sphere-col-b idx0))
-                               (set refl-base0 (aref sphere-refl idx0)))
-                             (progn
-                               (set nx0 0.0f0)
-                               (set ny0 -1.0f0)
-                               (set nz0 0.0f0)
-                               (let* ((x-div (/ hit-x0 140.0f0))
-                                      (z-div (/ (- hit-z0 -1400.0f0) 140.0f0))
-                                      (ix-fl (floor x-div))
-                                      (iz-fl (floor z-div))
-                                      (sum (+ ix-fl iz-fl))
-                                      (div2 (* sum 0.5f0))
-                                      (is-even (< (- div2 (floor div2)) 0.25f0)))
-                                 (if is-even
-                                     (progn (set col-r0 0.9f0) (set col-g0 0.9f0) (set col-b0 0.9f0))
-                                     (progn (set col-r0 0.2f0) (set col-g0 0.2f0) (set col-b0 0.2f0))))
-                               (set refl-base0 0.05f0)))
+                         ,(make-load-surface-data 'type0 'idx0 'hit-x0 'hit-y0 'hit-z0
+                                                   'nx0 'ny0 'nz0
+                                                   'col-r0 'col-g0 'col-b0 'refl-base0)
                          
                          (let ((r0 0.0f0) (g0 0.0f0) (b0 0.0f0) (refl0 0.0f0))
                            ,(make-compute-shading 'eye-x 'eye-y 'eye-z 'dx 'dy 'dz 't0 'type0 'idx0 'r0 'g0 'b0 'refl0)
@@ -399,34 +351,9 @@ cat << 'EOF' > gpu-raytracer.lsp
                                               (nx1 0.0f0) (ny1 0.0f0) (nz1 0.0f0)
                                               (col-r1 0.0f0) (col-g1 0.0f0) (col-b1 0.0f0)
                                               (refl-base1 0.0f0))
-                                         (if (= type1 1)
-                                             (let* ((cx (aref sphere-cx idx1))
-                                                    (cy (aref sphere-cy idx1))
-                                                    (cz (aref sphere-cz idx1))
-                                                    (r (aref sphere-r idx1))
-                                                    (inv-r (/ 1.0f0 r)))
-                                               (set nx1 (* (- hit-x1 cx) inv-r))
-                                               (set ny1 (* (- hit-y1 cy) inv-r))
-                                               (set nz1 (* (- hit-z1 cz) inv-r))
-                                               (set col-r1 (aref sphere-col-r idx1))
-                                               (set col-g1 (aref sphere-col-g idx1))
-                                               (set col-b1 (aref sphere-col-b idx1))
-                                               (set refl-base1 (aref sphere-refl idx1)))
-                                             (progn
-                                               (set nx1 0.0f0)
-                                               (set ny1 -1.0f0)
-                                               (set nz1 0.0f0)
-                                               (let* ((x-div (/ hit-x1 140.0f0))
-                                                      (z-div (/ (- hit-z1 -1400.0f0) 140.0f0))
-                                                      (ix-fl (floor x-div))
-                                                      (iz-fl (floor z-div))
-                                                      (sum (+ ix-fl iz-fl))
-                                                      (div2 (* sum 0.5f0))
-                                                      (is-even (< (- div2 (floor div2)) 0.25f0)))
-                                                 (if is-even
-                                                     (progn (set col-r1 0.9f0) (set col-g1 0.9f0) (set col-b1 0.9f0))
-                                                     (progn (set col-r1 0.2f0) (set col-g1 0.2f0) (set col-b1 0.2f0))))
-                                               (set refl-base1 0.05f0)))
+                                         ,(make-load-surface-data 'type1 'idx1 'hit-x1 'hit-y1 'hit-z1
+                                                                   'nx1 'ny1 'nz1
+                                                                   'col-r1 'col-g1 'col-b1 'refl-base1)
                                          
                                          (let ((r1-base 0.0f0) (g1-base 0.0f0) (b1-base 0.0f0) (refl1 0.0f0))
                                            ,(make-compute-shading 'ox1 'oy1 'oz1 'dx1 'dy1 'dz1 't1 'type1 'idx1 'r1-base 'g1-base 'b1-base 'refl1)
@@ -453,34 +380,9 @@ cat << 'EOF' > gpu-raytracer.lsp
                                                                 (nx2 0.0f0) (ny2 0.0f0) (nz2 0.0f0)
                                                                 (col-r2 0.0f0) (col-g2 0.0f0) (col-b2 0.0f0)
                                                                 (refl-base2 0.0f0))
-                                                           (if (= type2 1)
-                                                               (let* ((cx (aref sphere-cx idx2))
-                                                                      (cy (aref sphere-cy idx2))
-                                                                      (cz (aref sphere-cz idx2))
-                                                                      (r (aref sphere-r idx2))
-                                                                      (inv-r (/ 1.0f0 r)))
-                                                                 (set nx2 (* (- hit-x2 cx) inv-r))
-                                                                 (set ny2 (* (- hit-y2 cy) inv-r))
-                                                                 (set nz2 (* (- hit-z2 cz) inv-r))
-                                                                 (set col-r2 (aref sphere-col-r idx2))
-                                                                 (set col-g2 (aref sphere-col-g idx2))
-                                                                 (set col-b2 (aref sphere-col-b idx2))
-                                                                 (set refl-base2 (aref sphere-refl idx2)))
-                                                               (progn
-                                                                 (set nx2 0.0f0)
-                                                                 (set ny2 -1.0f0)
-                                                                 (set nz2 0.0f0)
-                                                                 (let* ((x-div (/ hit-x2 140.0f0))
-                                                                        (z-div (/ (- hit-z2 -1400.0f0) 140.0f0))
-                                                                        (ix-fl (floor x-div))
-                                                                        (iz-fl (floor z-div))
-                                                                        (sum (+ ix-fl iz-fl))
-                                                                        (div2 (* sum 0.5f0))
-                                                                        (is-even (< (- div2 (floor div2)) 0.25f0)))
-                                                                   (if is-even
-                                                                       (progn (set col-r2 0.9f0) (set col-g2 0.9f0) (set col-b2 0.9f0))
-                                                                       (progn (set col-r2 0.2f0) (set col-g2 0.2f0) (set col-b2 0.2f0))))
-                                                                 (set refl-base2 0.05f0)))
+                                                           ,(make-load-surface-data 'type2 'idx2 'hit-x2 'hit-y2 'hit-z2
+                                                                                     'nx2 'ny2 'nz2
+                                                                                     'col-r2 'col-g2 'col-b2 'refl-base2)
                                                            
                                                            (let ((r2-base 0.0f0) (g2-base 0.0f0) (b2-base 0.0f0) (refl2 0.0f0))
                                                              ,(make-compute-shading 'ox2 'oy2 'oz2 'dx2 'dy2 'dz2 't2 'type2 'idx2 'r2-base 'g2-base 'b2-base 'refl2)
@@ -505,83 +407,35 @@ cat << 'EOF' > gpu-raytracer.lsp
                                                                                   (hit-y3 (+ oy3 (* t3 dy3)))
                                                                                   (hit-z3 (+ oz3 (* t3 dz3)))
                                                                                   (nx3 0.0f0) (ny3 0.0f0) (nz3 0.0f0)
-                                                                                  (col-r3 0.0f0) (col-g3 0.0f0) (col-b3 0.0f0))
-                                                                             (if (= type3 1)
-                                                                                 (let* ((cx (aref sphere-cx idx3))
-                                                                                        (cy (aref sphere-cy idx3))
-                                                                                        (cz (aref sphere-cz idx3))
-                                                                                        (r (aref sphere-r idx3))
-                                                                                        (inv-r (/ 1.0f0 r)))
-                                                                                   (set nx3 (* (- hit-x3 cx) inv-r))
-                                                                                   (set ny3 (* (- hit-y3 cy) inv-r))
-                                                                                   (set nz3 (* (- hit-z3 cz) inv-r))
-                                                                                   (set col-r3 (aref sphere-col-r idx3))
-                                                                                   (set col-g3 (aref sphere-col-g idx3))
-                                                                                   (set col-b3 (aref sphere-col-b idx3)))
-                                                                                 (progn
-                                                                                   (set nx3 0.0f0)
-                                                                                   (set ny3 -1.0f0)
-                                                                                   (set nz3 0.0f0)
-                                                                                   (let* ((x-div (/ hit-x3 140.0f0))
-                                                                                          (z-div (/ (- hit-z3 -1400.0f0) 140.0f0))
-                                                                                          (ix-fl (floor x-div))
-                                                                                          (iz-fl (floor z-div))
-                                                                                          (sum (+ ix-fl iz-fl))
-                                                                                          (div2 (* sum 0.5f0))
-                                                                                          (is-even (< (- div2 (floor div2)) 0.25f0)))
-                                                                                     (if is-even
-                                                                                         (progn (set col-r3 0.9f0) (set col-g3 0.9f0) (set col-b3 0.9f0))
-                                                                                         (progn (set col-r3 0.2f0) (set col-g3 0.2f0) (set col-b3 0.2f0))))))
+                                                                                  (col-r3 0.0f0) (col-g3 0.0f0) (col-b3 0.0f0)
+                                                                                  (refl-base3 0.0f0))
+                                                                             ,(make-load-surface-data 'type3 'idx3 'hit-x3 'hit-y3 'hit-z3
+                                                                                                       'nx3 'ny3 'nz3
+                                                                                                       'col-r3 'col-g3 'col-b3 'refl-base3)
                                                                              
                                                                              (let ((r3-base 0.0f0) (g3-base 0.0f0) (b3-base 0.0f0) (refl3 0.0f0))
                                                                                ,(make-compute-shading 'ox3 'oy3 'oz3 'dx3 'dy3 'dz3 't3 'type3 'idx3 'r3-base 'g3-base 'b3-base 'refl3)
-                                                                               (set r3 (if (< r3-base 0.0f0) 0.0f0 (if (> r3-base 1.0f0) 1.0f0 r3-base)))
-                                                                               (set g3 (if (< g3-base 0.0f0) 0.0f0 (if (> g3-base 1.0f0) 1.0f0 g3-base)))
-                                                                               (set b3 (if (< b3-base 0.0f0) 0.0f0 (if (> b3-base 1.0f0) 1.0f0 b3-base))))))
+                                                                               ,(make-clamp-rgb 'r3-base 'g3-base 'b3-base 'r3 'g3 'b3))))
                                                                        
-                                                                       (let* ((lum3 (* 0.333f0 (+ (+ r3 g3) b3)))
-                                                                              (final-r (+ r2-base (* refl2 lum3)))
-                                                                              (final-g (+ g2-base (* refl2 lum3)))
-                                                                              (final-b (+ b2-base (* refl2 lum3))))
-                                                                         (set r2 (if (< final-r 0.0f0) 0.0f0 (if (> final-r 1.0f0) 1.0f0 final-r)))
-                                                                         (set g2 (if (< final-g 0.0f0) 0.0f0 (if (> final-g 1.0f0) 1.0f0 final-g)))
-                                                                         (set b2 (if (< final-b 0.0f0) 0.0f0 (if (> final-b 1.0f0) 1.0f0 final-b)))))))
+                                                                       ,(make-compose-reflection 'r2-base 'g2-base 'b2-base 'refl2
+                                                                                                 'r3 'g3 'b3 'r2 'g2 'b2))))
                                                                    
-                                                                   (progn
-                                                                     (set r2 (if (< r2-base 0.0f0) 0.0f0 (if (> r2-base 1.0f0) 1.0f0 r2-base)))
-                                                                     (set g2 (if (< g2-base 0.0f0) 0.0f0 (if (> g2-base 1.0f0) 1.0f0 g2-base)))
-                                                                     (set b2 (if (< b2-base 0.0f0) 0.0f0 (if (> b2-base 1.0f0) 1.0f0 b2-base)))))))
+                                                                   ,(make-clamp-rgb 'r2-base 'g2-base 'b2-base 'r2 'g2 'b2)))))
                                                    
-                                                   (let* ((lum2 (* 0.333f0 (+ (+ r2 g2) b2)))
-                                                          (final-r (+ r1-base (* refl1 lum2)))
-                                                          (final-g (+ g1-base (* refl1 lum2)))
-                                                          (final-b (+ b1-base (* refl1 lum2))))
-                                                     (set r1 (if (< final-r 0.0f0) 0.0f0 (if (> final-r 1.0f0) 1.0f0 final-r)))
-                                                     (set g1 (if (< final-g 0.0f0) 0.0f0 (if (> final-g 1.0f0) 1.0f0 final-g)))
-                                                     (set b1 (if (< final-b 0.0f0) 0.0f0 (if (> final-b 1.0f0) 1.0f0 final-b))))))
+                                                   ,(make-compose-reflection 'r1-base 'g1-base 'b1-base 'refl1
+                                                                             'r2 'g2 'b2 'r1 'g1 'b1))))
                                                
-                                               (progn
-                                                 (set r1 (if (< r1-base 0.0f0) 0.0f0 (if (> r1-base 1.0f0) 1.0f0 r1-base)))
-                                                 (set g1 (if (< g1-base 0.0f0) 0.0f0 (if (> g1-base 1.0f0) 1.0f0 g1-base)))
-                                                 (set b1 (if (< b1-base 0.0f0) 0.0f0 (if (> b1-base 1.0f0) 1.0f0 b1-base))))))
+                                               ,(make-clamp-rgb 'r1-base 'g1-base 'b1-base 'r1 'g1 'b1)))))
                                        
-                                       (let* ((lum1 (* 0.333f0 (+ (+ r1 g1) b1)))
-                                              (final-r (+ r0 (* refl0 lum1)))
-                                              (final-g (+ g0 (* refl0 lum1)))
-                                              (final-b (+ b0 (* refl0 lum1))))
-                                         (set accum-r (if (< final-r 0.0f0) 0.0f0 (if (> final-r 1.0f0) 1.0f0 final-r)))
-                                         (set accum-g (if (< final-g 0.0f0) 0.0f0 (if (> final-g 1.0f0) 1.0f0 final-g)))
-                                         (set accum-b (if (< final-b 0.0f0) 0.0f0 (if (> final-b 1.0f0) 1.0f0 final-b)))))))
+                                       ,(make-compose-reflection 'r0 'g0 'b0 'refl0
+                                                                 'r1 'g1 'b1 'accum-r 'accum-g 'accum-b))))
                             
-                            (progn
-                              (set accum-r (if (< r0 0.0f0) 0.0f0 (if (> r0 1.0f0) 1.0f0 r0)))
-                              (set accum-g (if (< g0 0.0f0) 0.0f0 (if (> g0 1.0f0) 1.0f0 g0)))
-                              (set accum-b (if (< b0 0.0f0) 0.0f0 (if (> b0 1.0f0) 1.0f0 b0)))))))
+                            ,(make-clamp-rgb 'r0 'g0 'b0 'accum-r 'accum-g 'accum-b))))
               
               ;; Output raw floating-point pixel colors
               (set (aref out-r pixel-idx) accum-r)
               (set (aref out-g pixel-idx) accum-g)
-              (set (aref out-b pixel-idx) accum-b))))))))))))
+              (set (aref out-b pixel-idx) accum-b))))))))
 
 ;; Host side orchestration code
 (defun run-gpu-raytracer (&key (res 8) (output-file "spheres_gpu.ppm"))
@@ -759,9 +613,11 @@ cat << 'EOF' > gpu-raytracer.lsp
                     (memory-block-aref sph-col-g i)
                     (memory-block-aref sph-col-b i)))
           
-          (format t "Launching CUDA kernel (Grid: ~Ax~A, Block: ~Ax~A)...~%" grid-x grid-y block-x block-y)
+          ;; Bump the kernel symbol whenever the generated program changes so
+          ;; cl-cuda cannot reuse a module compiled for an older definition.
+          (format t "Launching CUDA kernel v7 (Grid: ~Ax~A, Block: ~Ax~A)...~%" grid-x grid-y block-x block-y)
           (let ((start-time (get-internal-real-time)))
-            (raytrace-kernel-v6 out-r out-g out-b
+            (raytrace-kernel-v7 out-r out-g out-b
                              width height
                              width-f height-f
                              sph-cx sph-cy sph-cz
@@ -787,17 +643,5 @@ cat << 'EOF' > gpu-raytracer.lsp
                    (elapsed (/ (float (- end-time start-time)) internal-time-units-per-second)))
               (format t "GPU Raytracing completed in ~,4F seconds.~%" elapsed)))
           
-          ;; Write to PPM Image format
-          (format t "Saving PPM file to ~A...~%" output-file)
-          (with-open-file (p output-file :direction :output :if-exists :supersede)
-            (format p "P3~%~A ~A~%255~%" width height)
-            (dotimes (i size)
-              (let ((r (round (* 255.0f0 (max 0.0f0 (min 1.0f0 (memory-block-aref out-r i))))))
-                    (g (round (* 255.0f0 (max 0.0f0 (min 1.0f0 (memory-block-aref out-g i))))))
-                    (b (round (* 255.0f0 (max 0.0f0 (min 1.0f0 (memory-block-aref out-b i)))))))
-                (format p "~D ~D ~D~%" r g b))))
+          (write-ppm output-file width height size out-r out-g out-b)
           (format t "Rendering Job Successful!~%"))))))
-
-EOF
-
-sbcl --non-interactive --eval "(defparameter *cpu-init-random-state* (make-random-state nil))" --load ~/quicklisp/setup.lisp --load gpu-raytracer.lsp --eval "(gpu-raytracer:run-gpu-raytracer :res 8 :output-file \"spheres_gpu.ppm\")"

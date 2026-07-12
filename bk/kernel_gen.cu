@@ -614,4 +614,3 @@ __global__ void gpu_raytracer_raytrace_kernel( float* out_r, float* out_g, float
     }
   }
 }
-

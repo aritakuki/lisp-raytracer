@@ -270,6 +270,120 @@
          (set ,oy (+ ,hit-y (* ,ny 0.05f0)))
          (set ,oz (+ ,hit-z (* ,nz 0.05f0))))))
 
+  ;; Trace a ray through a spherical glass surface and out through its far
+  ;; surface.  This is the GPU counterpart of CPU trace-refraction: only the
+  ;; transmitted branch is followed here, while the caller composes it with
+  ;; the ordinary reflected branch using Schlick Fresnel.
+  (defun make-trace-glass-transmission
+      (hit-x hit-y hit-z dx dy dz nx ny nz ior source-idx out-r out-g out-b)
+    `(progn
+       (set ,out-r 0.0f0)
+       (set ,out-g 0.0f0)
+       (set ,out-b 0.0f0)
+       ;; Enter the glass (air -> IOR).
+       (let* ((dot-in (+ (* ,dx ,nx) (* ,dy ,ny) (* ,dz ,nz)))
+              (eta-in (/ 1.0f0 ,ior))
+              (cos-in (- 0.0f0 dot-in))
+              (k-in (- 1.0f0 (* eta-in eta-in (- 1.0f0 (* cos-in cos-in))))))
+         (if (>= k-in 0.0f0)
+             (let* ((sqrt-k-in (sqrt k-in))
+                    (tx-in (+ (* eta-in ,dx) (* (- (* eta-in cos-in) sqrt-k-in) ,nx)))
+                    (ty-in (+ (* eta-in ,dy) (* (- (* eta-in cos-in) sqrt-k-in) ,ny)))
+                    (tz-in (+ (* eta-in ,dz) (* (- (* eta-in cos-in) sqrt-k-in) ,nz)))
+                    (len-in (sqrt (+ (* tx-in tx-in) (* ty-in ty-in) (* tz-in tz-in))))
+                    (inv-len-in (/ 1.0f0 len-in))
+                    (dx-in (* tx-in inv-len-in))
+                    (dy-in (* ty-in inv-len-in))
+                    (dz-in (* tz-in inv-len-in))
+                    (ox-in (+ ,hit-x (* dx-in 0.05f0)))
+                    (oy-in (+ ,hit-y (* dy-in 0.05f0)))
+                    (oz-in (+ ,hit-z (* dz-in 0.05f0)))
+                    (t-in 1.0f10) (type-in 0) (idx-in -1))
+               ,(make-find-first-hit 'ox-in 'oy-in 'oz-in 'dx-in 'dy-in 'dz-in
+                                     't-in 'type-in 'idx-in)
+               (if (= type-in 0)
+                   ,(make-compute-sky-color 'dy-in out-r out-g out-b)
+                   ;; A ray entering a convex glass sphere normally reaches
+                   ;; the far side of that same sphere.  Refract it back into
+                   ;; air before obtaining the transmitted scene colour.
+                   (if (= type-in 1)
+                       (if (= idx-in ,source-idx)
+                           (let* ((exit-x (+ ox-in (* t-in dx-in)))
+                                  (exit-y (+ oy-in (* t-in dy-in)))
+                                  (exit-z (+ oz-in (* t-in dz-in)))
+                                  (cx-exit (aref sphere-cx idx-in))
+                                  (cy-exit (aref sphere-cy idx-in))
+                                  (cz-exit (aref sphere-cz idx-in))
+                                  (r-exit (aref sphere-r idx-in))
+                                  (inv-r-exit (/ 1.0f0 r-exit))
+                                  (nx-exit (* (- exit-x cx-exit) inv-r-exit))
+                                  (ny-exit (* (- exit-y cy-exit) inv-r-exit))
+                                  (nz-exit (* (- exit-z cz-exit) inv-r-exit))
+                                  ;; The ray is inside, so the normal is
+                                  ;; reversed for Snell's law (IOR -> air).
+                                  (onx (- 0.0f0 nx-exit))
+                                  (ony (- 0.0f0 ny-exit))
+                                  (onz (- 0.0f0 nz-exit))
+                                  (cos-out (- 0.0f0 (+ (* dx-in onx) (* dy-in ony) (* dz-in onz))))
+                                  (eta-out ,ior)
+                                  (k-out (- 1.0f0 (* eta-out eta-out
+                                                       (- 1.0f0 (* cos-out cos-out))))))
+                             (if (>= k-out 0.0f0)
+                                 (let* ((sqrt-k-out (sqrt k-out))
+                                        (tx-out (+ (* eta-out dx-in) (* (- (* eta-out cos-out) sqrt-k-out) onx)))
+                                        (ty-out (+ (* eta-out dy-in) (* (- (* eta-out cos-out) sqrt-k-out) ony)))
+                                        (tz-out (+ (* eta-out dz-in) (* (- (* eta-out cos-out) sqrt-k-out) onz)))
+                                        (len-out (sqrt (+ (* tx-out tx-out) (* ty-out ty-out) (* tz-out tz-out))))
+                                        (inv-len-out (/ 1.0f0 len-out))
+                                        (dx-out (* tx-out inv-len-out))
+                                        (dy-out (* ty-out inv-len-out))
+                                        (dz-out (* tz-out inv-len-out))
+                                        (ox-out (+ exit-x (* dx-out 0.05f0)))
+                                        (oy-out (+ exit-y (* dy-out 0.05f0)))
+                                        (oz-out (+ exit-z (* dz-out 0.05f0)))
+                                        (t-out 1.0f10) (type-out 0) (idx-out -1))
+                                   ,(make-find-first-hit 'ox-out 'oy-out 'oz-out 'dx-out 'dy-out 'dz-out
+                                                         't-out 'type-out 'idx-out)
+                                   (if (= type-out 0)
+                                       ,(make-compute-sky-color 'dy-out out-r out-g out-b)
+                                       (let ((trans-refl 0.0f0))
+                                         ,(make-compute-shading 'ox-out 'oy-out 'oz-out
+                                                                'dx-out 'dy-out 'dz-out
+                                                                't-out 'type-out 'idx-out
+                                                                out-r out-g out-b 'trans-refl))))))
+                           ;; An unexpected internal hit still contributes its
+                           ;; local colour rather than leaving a black path.
+                           (let ((trans-refl 0.0f0))
+                             ,(make-compute-shading 'ox-in 'oy-in 'oz-in
+                                                    'dx-in 'dy-in 'dz-in
+                                                    't-in 'type-in 'idx-in
+                                                    out-r out-g out-b 'trans-refl)))
+                       ;; A refracted ray can also reach the plane before a
+                       ;; sphere boundary in degenerate scene configurations.
+                       (let ((trans-refl 0.0f0))
+                         ,(make-compute-shading 'ox-in 'oy-in 'oz-in
+                                                'dx-in 'dy-in 'dz-in
+                                                't-in 'type-in 'idx-in
+                                                out-r out-g out-b 'trans-refl)))))))))
+
+  (defun make-compose-glass (base-r base-g base-b refl-r refl-g refl-b
+                             trans-r trans-g trans-b ior dx dy dz nx ny nz
+                             out-r out-g out-b)
+    ;; Matches CPU compose-color's glass branch: 50% local colour and 50%
+    ;; Fresnel-weighted reflection/refraction.
+    `(let* ((view-dot (+ (* (- ,dx) ,nx) (* (- ,dy) ,ny) (* (- ,dz) ,nz)))
+            (vdot (if (> view-dot 0.0f0) view-dot 0.0f0))
+            (ior-ratio (/ (- ,ior 1.0f0) (+ ,ior 1.0f0)))
+            (f0 (* ior-ratio ior-ratio))
+            (fresnel (+ f0 (* (- 1.0f0 f0) (expt (- 1.0f0 vdot) 5.0f0))))
+            (trans-weight (- 1.0f0 fresnel)))
+       (set ,out-r (+ (* 0.5f0 ,base-r)
+                      (* 0.5f0 (+ (* fresnel ,refl-r) (* trans-weight ,trans-r)))))
+       (set ,out-g (+ (* 0.5f0 ,base-g)
+                      (* 0.5f0 (+ (* fresnel ,refl-g) (* trans-weight ,trans-g)))))
+       (set ,out-b (+ (* 0.5f0 ,base-b)
+                      (* 0.5f0 (+ (* fresnel ,refl-b) (* trans-weight ,trans-b)))))))
+
   (defun make-clamp-rgb (source-r source-g source-b out-r out-g out-b)
     `(progn
        (set ,out-r (if (< ,source-r 0.0f0) 0.0f0 (if (> ,source-r 1.0f0) 1.0f0 ,source-r)))
@@ -303,7 +417,7 @@
 
 ;; GPU Raytracer Kernel definition utilizing code templates to expand exactly 3 recursion levels.
 (eval
-  `(defkernel raytrace-kernel-v10 (void ((out-r float*) (out-g float*) (out-b float*)
+  `(defkernel raytrace-kernel-v11 (void ((out-r float*) (out-g float*) (out-b float*)
                                     (out-shadow float*)
                                     ;; Primary shading before any recursive reflection.
                                     (out-direct-r float*) (out-direct-g float*) (out-direct-b float*)
@@ -314,7 +428,7 @@
                                     (sphere-cx float*) (sphere-cy float*) (sphere-cz float*)
                                     (sphere-r float*)
                                     (sphere-col-r float*) (sphere-col-g float*) (sphere-col-b float*)
-                                    (sphere-refl float*)
+                                    (sphere-refl float*) (sphere-ior float*)
                                     (num-spheres int)
                                     (eye-x cl-cuda:float) (eye-y cl-cuda:float) (eye-z cl-cuda:float)
                                     (f-x cl-cuda:float) (f-y cl-cuda:float) (f-z cl-cuda:float)
@@ -376,14 +490,18 @@
                               (hit-z0 (+ eye-z (* t0 dz)))
                               (nx0 0.0f0) (ny0 0.0f0) (nz0 0.0f0)
                               (col-r0 0.0f0) (col-g0 0.0f0) (col-b0 0.0f0)
-                              (refl-base0 0.0f0))
+                              (refl-base0 0.0f0)
+                              ;; Planes are opaque.  Sphere IOR values match
+                              ;; the CPU animation material definitions.
+                              (ior0 (if (= type0 1) (aref sphere-ior idx0) 1.0f0)))
                          
                          ,(make-load-surface-data 'type0 'idx0 'hit-x0 'hit-y0 'hit-z0
                                                    'nx0 'ny0 'nz0
                                                    'col-r0 'col-g0 'col-b0 'refl-base0)
                          
                          (let ((r0 0.0f0) (g0 0.0f0) (b0 0.0f0) (refl0 0.0f0)
-                               (child1-direct-r 0.0f0) (child1-direct-g 0.0f0) (child1-direct-b 0.0f0))
+                               (child1-direct-r 0.0f0) (child1-direct-g 0.0f0) (child1-direct-b 0.0f0)
+                               (trans-r0 0.0f0) (trans-g0 0.0f0) (trans-b0 0.0f0))
                            ,(make-compute-shading 'eye-x 'eye-y 'eye-z 'dx 'dy 'dz 't0 'type0 'idx0 'r0 'g0 'b0 'refl0 'shadow0)
                            (set direct-r r0)
                            (set direct-g g0)
@@ -493,17 +611,35 @@
                                                
                                                ,(make-clamp-rgb 'r1-base 'g1-base 'b1-base 'r1 'g1 'b1)))))
                                        
-                                       ,(make-compose-reflection 'r0 'g0 'b0 'refl0
-                                                                 'r1 'g1 'b1 'accum-r 'accum-g 'accum-b)
-                                       ,(make-compose-reflection 'r0 'g0 'b0 'refl0
-                                                                 'child1-direct-r 'child1-direct-g 'child1-direct-b
-                                                                 'one-bounce-r 'one-bounce-g 'one-bounce-b))
+                                       (if (> ior0 1.01f0)
+                                           (progn
+                                             ,(make-trace-glass-transmission
+                                               'hit-x0 'hit-y0 'hit-z0 'dx 'dy 'dz
+                                               'nx0 'ny0 'nz0 'ior0 'idx0
+                                               'trans-r0 'trans-g0 'trans-b0)
+                                             ,(make-compose-glass
+                                               'r0 'g0 'b0 'r1 'g1 'b1
+                                               'trans-r0 'trans-g0 'trans-b0
+                                               'ior0 'dx 'dy 'dz 'nx0 'ny0 'nz0
+                                               'accum-r 'accum-g 'accum-b)
+                                             ,(make-compose-glass
+                                               'r0 'g0 'b0
+                                               'child1-direct-r 'child1-direct-g 'child1-direct-b
+                                               'trans-r0 'trans-g0 'trans-b0
+                                               'ior0 'dx 'dy 'dz 'nx0 'ny0 'nz0
+                                               'one-bounce-r 'one-bounce-g 'one-bounce-b))
+                                           (progn
+                                             ,(make-compose-reflection 'r0 'g0 'b0 'refl0
+                                                                       'r1 'g1 'b1 'accum-r 'accum-g 'accum-b)
+                                             ,(make-compose-reflection 'r0 'g0 'b0 'refl0
+                                                                       'child1-direct-r 'child1-direct-g 'child1-direct-b
+                                                                       'one-bounce-r 'one-bounce-g 'one-bounce-b)))
                             
                             ;; ACCUM-* already contains the recursive reflection
                             ;; composition.  Clamp that result; clamping R0/G0/B0
                             ;; here discarded every reflected contribution.
                             ,(make-clamp-rgb 'accum-r 'accum-g 'accum-b
-                                             'accum-r 'accum-g 'accum-b))))))
+                                             'accum-r 'accum-g 'accum-b)))))))
               
               ;; Output raw floating-point pixel colors
               (set (aref out-r pixel-idx) accum-r)
@@ -697,34 +833,44 @@
     (setf sphere-data nil)
     ;; 3 large spheres.  FRAME uses the same sinusoidal paths as the CPU
     ;; animation; NIL preserves the still-image scene exactly.
-    (let ((frame-f (if frame (float frame 1.0f0) 0.0f0)))
+    (let ((frame-f (if frame (float frame 1.0f0) 0.0f0))
+          ;; Preserve the established still-image material; the CPU animation
+          ;; used a stronger red reflection and a glass green sphere.
+          (red-refl (if frame 0.2f0 0.02f0))
+          (green-ior (if frame 1.1f0 1.0f0)))
       (push (list (* 150.0f0 (sin (* frame-f 0.1f0)))
                   -300.0f0 -1200.0f0 200.0f0
-                  0.8f0 0.2f0 0.2f0 0.02f0)
+                  0.8f0 0.2f0 0.2f0 red-refl 1.0f0)
             sphere-data)
       (push (list -80.0f0
                   (+ -150.0f0 (* 100.0f0 (sin (* frame-f 0.15f0))))
                   -1200.0f0 200.0f0
-                  0.2f0 0.8f0 0.2f0 0.2f0)
+                  0.2f0 0.8f0 0.2f0 0.2f0 green-ior)
             sphere-data)
       (push (list 70.0f0 -100.0f0
                   (+ -1200.0f0 (* 200.0f0 (sin (* frame-f 0.12f0))))
-                  200.0f0 0.2f0 0.2f0 0.9f0 0.2f0)
+                  200.0f0 0.2f0 0.2f0 0.9f0 0.2f0 1.0f0)
             sphere-data))
     ;; Small spheres (matching CPU order and random generation)
-    (do ((x -2 (1+ x)))
-        ((> x 2))
-      (do ((z 2 (1+ z)))
-          ((> z 7))
-        (push (list (float (* x 200) 1.0f0)
-                    300.0f0
-                    (float (* z -400) 1.0f0)
-                    40.0f0
-                    (float (random 1.0) 1.0f0)
-                    (float (random 1.0) 1.0f0)
-                    (float (random 1.0) 1.0f0)
-                    0.1f0)
-              sphere-data)))
+    (let ((small-sphere-index 0))
+      (do ((x -2 (1+ x)))
+          ((> x 2))
+        (do ((z 2 (1+ z)))
+            ((> z 7))
+          (push (list (float (* x 200) 1.0f0)
+                      300.0f0
+                      (float (* z -400) 1.0f0)
+                      40.0f0
+                      (float (random 1.0) 1.0f0)
+                      (float (random 1.0) 1.0f0)
+                      (float (random 1.0) 1.0f0)
+                      0.1f0
+                      ;; CPU animation: every third small sphere is glass.
+                      (if frame
+                          (if (> (mod small-sphere-index 3) 1) 1.5f0 1.0f0)
+                          1.0f0))
+                sphere-data)
+          (incf small-sphere-index))))
     
     #|
     (setf sphere-data
@@ -802,7 +948,8 @@
                              (sph-col-r 'cl-cuda:float num-spheres)
                              (sph-col-g 'cl-cuda:float num-spheres)
                              (sph-col-b 'cl-cuda:float num-spheres)
-                             (sph-refl 'cl-cuda:float num-spheres))
+                             (sph-refl 'cl-cuda:float num-spheres)
+                             (sph-ior 'cl-cuda:float num-spheres))
           
           ;; Copy scene data to host side memory blocks
           (let ((idx 0))
@@ -814,7 +961,8 @@
                     (memory-block-aref sph-col-r idx) (nth 4 s)
                     (memory-block-aref sph-col-g idx) (nth 5 s)
                     (memory-block-aref sph-col-b idx) (nth 6 s)
-                    (memory-block-aref sph-refl idx) (nth 7 s))
+                    (memory-block-aref sph-refl idx) (nth 7 s)
+                    (memory-block-aref sph-ior idx) (nth 8 s))
               (incf idx)))
           
           ;; Sync from host memory to GPU device memory
@@ -826,6 +974,7 @@
           (sync-memory-block sph-col-g :host-to-device)
           (sync-memory-block sph-col-b :host-to-device)
           (sync-memory-block sph-refl :host-to-device)
+          (sync-memory-block sph-ior :host-to-device)
           
           (dotimes (i 3)
             (format t "DEBUG Sphere ~D: Center (~F, ~F, ~F), Radius ~F, Color (~F, ~F, ~F)~%"
@@ -840,9 +989,9 @@
           
           ;; Bump the kernel symbol whenever the generated program changes so
           ;; cl-cuda cannot reuse a module compiled for an older definition.
-          (format t "Launching CUDA kernel v10 (Grid: ~Ax~A, Block: ~Ax~A)...~%" grid-x grid-y block-x block-y)
+          (format t "Launching CUDA kernel v11 (Grid: ~Ax~A, Block: ~Ax~A)...~%" grid-x grid-y block-x block-y)
           (let ((start-time (get-internal-real-time)))
-            (raytrace-kernel-v10 out-r out-g out-b out-shadow
+            (raytrace-kernel-v11 out-r out-g out-b out-shadow
                              out-direct-r out-direct-g out-direct-b
                              out-one-bounce-r out-one-bounce-g out-one-bounce-b
                              width height
@@ -850,7 +999,7 @@
                              sph-cx sph-cy sph-cz
                              sph-r
                              sph-col-r sph-col-g sph-col-b
-                             sph-refl
+                             sph-refl sph-ior
                              num-spheres
                              eye-x eye-y eye-z
                              fx fy fz

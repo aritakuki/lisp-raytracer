@@ -834,10 +834,10 @@
     ;; 3 large spheres.  FRAME uses the same sinusoidal paths as the CPU
     ;; animation; NIL preserves the still-image scene exactly.
     (let ((frame-f (if frame (float frame 1.0f0) 0.0f0))
-          ;; Preserve the established still-image material; the CPU animation
-          ;; used a stronger red reflection and a glass green sphere.
+          ;; The animated CPU scene's material setup also applies to a
+          ;; single still frame: the green large sphere is glass.
           (red-refl (if frame 0.2f0 0.02f0))
-          (green-ior (if frame 1.1f0 1.0f0)))
+          (green-ior 1.1f0))
       (push (list (* 150.0f0 (sin (* frame-f 0.1f0)))
                   -300.0f0 -1200.0f0 200.0f0
                   0.8f0 0.2f0 0.2f0 red-refl 1.0f0)
@@ -866,9 +866,8 @@
                       (float (random 1.0) 1.0f0)
                       0.1f0
                       ;; CPU animation: every third small sphere is glass.
-                      (if frame
-                          (if (> (mod small-sphere-index 3) 1) 1.5f0 1.0f0)
-                          1.0f0))
+                      ;; Keep this material assignment for still renders too.
+                      (if (> (mod small-sphere-index 3) 1) 1.5f0 1.0f0))
                 sphere-data)
           (incf small-sphere-index))))
     

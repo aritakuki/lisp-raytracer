@@ -18,12 +18,12 @@
        (set ,hit-type 0)
        (set ,hit-idx -1)
        ;; 1. Check Spheres
-       (do ((i 0 (+ i 1)))
-           ((>= i num-spheres))
-         (let* ((cx (aref sphere-cx i))
-                (cy (aref sphere-cy i))
-                (cz (aref sphere-cz i))
-                (r (aref sphere-r i))
+       (do ((sphere-index 0 (+ sphere-index 1)))
+           ((>= sphere-index num-spheres))
+         (let* ((cx (aref sphere-cx sphere-index))
+                (cy (aref sphere-cy sphere-index))
+                (cz (aref sphere-cz sphere-index))
+                (r (aref sphere-r sphere-index))
                 (vx (- ,ox cx))
                 (vy (- ,oy cy))
                 (vz (- ,oz cz))
@@ -32,27 +32,31 @@
                 (disc (- (* b-prime b-prime) c-val)))
            (if (>= disc 0.0f0)
                (let* ((sqrt-disc (sqrt disc))
-                      (t1 (- (- b-prime) sqrt-disc))
-                      (t2 (+ (- b-prime) sqrt-disc))
-                      (t-val (if (> t1 0.001f0)
-                                 t1
-                                 (if (> t2 0.001f0)
-                                     t2
+                      ;; Do not name these T1/T2: at reflection depths the
+                      ;; caller's nearest-hit accumulator is also T1, and
+                      ;; cl-cuda emits the local declaration in the same C++
+                      ;; scope, shadowing that accumulator.
+                      (near-root (- (- b-prime) sqrt-disc))
+                      (far-root (+ (- b-prime) sqrt-disc))
+                      (t-val (if (> near-root 0.001f0)
+                                 near-root
+                                 (if (> far-root 0.001f0)
+                                     far-root
                                      1.0f10))))
                  (if (< t-val ,hit-t)
                      (progn
                        (set ,hit-t t-val)
                        (set ,hit-type 1)
-                       (set ,hit-idx i)))))))
+                       (set ,hit-idx sphere-index)))))))
        ;; 2. Check Checker Plane (Normal (0, -1, 0), Point (0, 500, -1400))
        (let* ((den (- ,dy))
               (abs-den (if (> den 0.0f0) den (- den))))
          (if (> abs-den 1.0f-8)
              (let* ((hit-t-plane (/ (- ,oy 500.0f0) den)))
                (if (> hit-t-plane 0.001f0)
-                   (let* ((ix-p (+ ,ox (* hit-t-plane ,dx)))
+                  (let* ((checker-hit-x (+ ,ox (* hit-t-plane ,dx)))
                           (iz-p (+ ,oz (* hit-t-plane ,dz)))
-                          (abs-ix-p (if (> ix-p 0.0f0) ix-p (- ix-p)))
+                          (abs-ix-p (if (> checker-hit-x 0.0f0) checker-hit-x (- checker-hit-x)))
                           (iz-p-diff (- iz-p -1400.0f0))
                           (abs-iz-p-diff (if (> iz-p-diff 0.0f0) iz-p-diff (- iz-p-diff))))
                      (if (<= abs-ix-p 2500.0f0)
@@ -87,10 +91,14 @@
                           (disc (- (* b-prime b-prime) c-val)))
                      (if (>= disc 0.0f0)
                          (let* ((sqrt-disc (sqrt disc))
-                                (t1 (- (- b-prime) sqrt-disc))
-                                (t2 (+ (- b-prime) sqrt-disc))
+                                ;; Keep these distinct from T1/T2/T3 used
+                                ;; by the unrolled reflection depths.
+                                (near-root (- (- b-prime) sqrt-disc))
+                                (far-root (+ (- b-prime) sqrt-disc))
                                 ;; Correct bias logic: find the closest hit > 0.001f0 first, then test if > 0.05f0.
-                                (t-min (if (> t1 0.001f0) t1 (if (> t2 0.001f0) t2 1.0f10)))
+                                (t-min (if (> near-root 0.001f0)
+                                           near-root
+                                           (if (> far-root 0.001f0) far-root 1.0f10)))
                                 (t-val (if (> t-min 0.05f0) t-min 1.0f10)))
                            (if (< t-val ,max-dist)
                                (set ,blocked 1)))))))))
@@ -135,17 +143,18 @@
            (set ,nz 0.0f0)
            (let* ((x-div (/ ,hit-x 140.0f0))
                   (z-div (/ (- ,hit-z -1400.0f0) 140.0f0))
-                  (ix (floor x-div))
-                  (iz (floor z-div))
-                  (sum (+ ix iz))
-                  (div2 (* sum 0.5f0))
+                  (checker-ix (floor x-div))
+                  (checker-iz (floor z-div))
+                  (checker-sum (+ checker-ix checker-iz))
+                  (div2 (* checker-sum 0.5f0))
                   (is-even (< (- div2 (floor div2)) 0.25f0)))
              (if is-even
                  (progn (set ,col-r 0.9f0) (set ,col-g 0.9f0) (set ,col-b 0.9f0))
                  (progn (set ,col-r 0.2f0) (set ,col-g 0.2f0) (set ,col-b 0.2f0))))
            (set ,refl-base 0.05f0))))
 
-  (defun make-compute-shading (ox oy oz dx dy dz hit-t hit-type hit-idx r-val g-val b-val refl-val)
+  (defun make-compute-shading (ox oy oz dx dy dz hit-t hit-type hit-idx r-val g-val b-val refl-val
+                               &optional shadow-factor-out)
     `(let* ((hit-x (+ ,ox (* ,hit-t ,dx)))
             (hit-y (+ ,oy (* ,hit-t ,dy)))
             (hit-z (+ ,oz (* ,hit-t ,dz)))
@@ -209,23 +218,27 @@
                 (rz-l (- ref-lz (* 2.0f0 ref-dot nz)))
                 (min-dx (- 0.0f0 ,dx)) (min-dy (- 0.0f0 ,dy)) (min-dz (- 0.0f0 ,dz))
                 (vdot-val (+ (* rx-l min-dx) (* ry-l min-dy) (* rz-l min-dz)))
-                (vdot (if (> vdot-val 0.0f0) vdot-val 0.0f0))
-                (v2 (* vdot vdot))
+                (spec-vdot (if (> vdot-val 0.0f0) vdot-val 0.0f0))
+                (v2 (* spec-vdot spec-vdot))
                 (v4 (* v2 v2))
                 (spec (* 1.5f0 (* sf (* v4 v4))))
                 
                 (base (+ 0.25f0 (* 0.7f0 diff) spec))
                 
                 ;; Fresnel reflectivity calculation
-                (dot-v-n (+ (* (- ,dx) nx) (* (- ,dy) ny) (* (- ,dz) nz)))
-                (vdot-refl (if (> dot-v-n 0.0f0) dot-v-n 0.0f0))
+                (reflect-view-dot (+ (* (- ,dx) nx) (* (- ,dy) ny) (* (- ,dz) nz)))
+                (vdot-refl (if (> reflect-view-dot 0.0f0) reflect-view-dot 0.0f0))
                 ;; Kept textually equivalent to CPU/sendray.
                 (fresnel-refl (+ refl-base (* (- 1.0f0 refl-base) (expt (- 1.0f0 vdot-refl) 5.0f0)))))
            
            (set ,r-val (* col-r base))
            (set ,g-val (* col-g base))
            (set ,b-val (* col-b base))
-           (set ,refl-val fresnel-refl)))))
+           (set ,refl-val fresnel-refl)
+           ;; Do not insert NIL into the GPU AST when this optional output is
+           ;; omitted: cl-cuda accepts statements only, not NIL forms.
+           ,@(when shadow-factor-out
+               (list `(set ,shadow-factor-out sf)))))))
 
   (defun make-compute-sky-color (dy r-val g-val b-val)
     ;; Same sky gradient as CPU/sendray.
@@ -249,9 +262,13 @@
        (set ,rx (* rx-dir-n inv-norm-rn))
        (set ,ry (* ry-dir-n inv-norm-rn))
        (set ,rz (* rz-dir-n inv-norm-rn))
-         (set ,ox (+ ,hit-x (* ,nx 0.001f0)))
-         (set ,oy (+ ,hit-y (* ,ny 0.001f0)))
-         (set ,oz (+ ,hit-z (* ,nz 0.001f0))))))
+         ;; 0.001 is only a few single-precision ULPs at this scene's
+         ;; coordinates (up to roughly 3000), so reflected rays re-hit their
+         ;; source sphere.  This bias is still negligible against the
+         ;; smallest sphere radius (40) but reliably clears the surface.
+         (set ,ox (+ ,hit-x (* ,nx 0.05f0)))
+         (set ,oy (+ ,hit-y (* ,ny 0.05f0)))
+         (set ,oz (+ ,hit-z (* ,nz 0.05f0))))))
 
   (defun make-clamp-rgb (source-r source-g source-b out-r out-g out-b)
     `(progn
@@ -261,15 +278,37 @@
 
   ;; CPU: base-color + reflectivity * grayscale(reflected-color).
   (defun make-compose-reflection (base-r base-g base-b refl child-r child-g child-b out-r out-g out-b)
-    `(let* ((lum (* 0.333f0 (+ (+ ,child-r ,child-g) ,child-b)))
-            (final-r (+ ,base-r (* ,refl lum)))
-            (final-g (+ ,base-g (* ,refl lum)))
-            (final-b (+ ,base-b (* ,refl lum))))
-       ,(make-clamp-rgb 'final-r 'final-g 'final-b out-r out-g out-b)))
+    ;; Do not introduce temporary local variables here.  cl-cuda's generated
+    ;; code lost this contribution in the recursive call site, although the
+    ;; identical term evaluated correctly in the diagnostic kernel.
+    `(progn
+       (set ,out-r
+            (if (< (+ ,base-r (* ,refl (* 0.333f0 (+ (+ ,child-r ,child-g) ,child-b)))) 0.0f0)
+                0.0f0
+                (if (> (+ ,base-r (* ,refl (* 0.333f0 (+ (+ ,child-r ,child-g) ,child-b)))) 1.0f0)
+                    1.0f0
+                    (+ ,base-r (* ,refl (* 0.333f0 (+ (+ ,child-r ,child-g) ,child-b)))))))
+       (set ,out-g
+            (if (< (+ ,base-g (* ,refl (* 0.333f0 (+ (+ ,child-r ,child-g) ,child-b)))) 0.0f0)
+                0.0f0
+                (if (> (+ ,base-g (* ,refl (* 0.333f0 (+ (+ ,child-r ,child-g) ,child-b)))) 1.0f0)
+                    1.0f0
+                    (+ ,base-g (* ,refl (* 0.333f0 (+ (+ ,child-r ,child-g) ,child-b)))))))
+       (set ,out-b
+            (if (< (+ ,base-b (* ,refl (* 0.333f0 (+ (+ ,child-r ,child-g) ,child-b)))) 0.0f0)
+                0.0f0
+                (if (> (+ ,base-b (* ,refl (* 0.333f0 (+ (+ ,child-r ,child-g) ,child-b)))) 1.0f0)
+                    1.0f0
+                    (+ ,base-b (* ,refl (* 0.333f0 (+ (+ ,child-r ,child-g) ,child-b)))))))))
 
 ;; GPU Raytracer Kernel definition utilizing code templates to expand exactly 3 recursion levels.
 (eval
-  `(defkernel raytrace-kernel-v7 (void ((out-r float*) (out-g float*) (out-b float*)
+  `(defkernel raytrace-kernel-v10 (void ((out-r float*) (out-g float*) (out-b float*)
+                                    (out-shadow float*)
+                                    ;; Primary shading before any recursive reflection.
+                                    (out-direct-r float*) (out-direct-g float*) (out-direct-b float*)
+                                    ;; Primary shading plus the first reflected hit only.
+                                    (out-one-bounce-r float*) (out-one-bounce-g float*) (out-one-bounce-b float*)
                                     (width int) (height int)
                                     (width-f cl-cuda:float) (height-f cl-cuda:float)
                                     (sphere-cx float*) (sphere-cy float*) (sphere-cz float*)
@@ -290,8 +329,10 @@
                (let* ((pixel-idx (+ (* iy width) ix))
                       (inv-w (/ 1.0f0 width-f))
                       (inv-h (/ 1.0f0 height-f))
-                      (sx (- (* 2.0f0 (* (+ (float ix) 0.5f0) inv-w)) 1.0f0))
-                      (sy (- 1.0f0 (* 2.0f0 (* (+ (float iy) 0.5f0) inv-h))))
+                      ;; cl-cuda has no FLOAT cast builtin.  Multiplication by
+                      ;; a single-float literal performs the required cast.
+                      (sx (- (* 2.0f0 (* (+ (* 1.0f0 ix) 0.5f0) inv-w)) 1.0f0))
+                      (sy (- 1.0f0 (* 2.0f0 (* (+ (* 1.0f0 iy) 0.5f0) inv-h))))
                       
                       ;; Camera Ray Direction
                       (rx-dir (+ f-x (* r-x sx scale) (* u-x sy scale)))
@@ -306,14 +347,28 @@
                       ;; Color Buffers
                       (accum-r 0.0f0)
                       (accum-g 0.0f0)
-                      (accum-b 0.0f0))
+                      (accum-b 0.0f0)
+                      (direct-r 0.0f0)
+                      (direct-g 0.0f0)
+                      (direct-b 0.0f0)
+                      (one-bounce-r 0.0f0)
+                      (one-bounce-g 0.0f0)
+                      (one-bounce-b 0.0f0)
+                      (shadow0 1.0f0))
                  
                  ;; Stage 0 (depth = 0)
                  (let ((t0 1.0f10) (type0 0) (idx0 -1))
                    ,(make-find-first-hit 'eye-x 'eye-y 'eye-z 'dx 'dy 'dz 't0 'type0 'idx0)
                    (if (= type0 0)
                        ;; hit nothing -> sky
-                       ,(make-compute-sky-color 'dy 'accum-r 'accum-g 'accum-b)
+                       (progn
+                         ,(make-compute-sky-color 'dy 'accum-r 'accum-g 'accum-b)
+                         (set direct-r accum-r)
+                         (set direct-g accum-g)
+                         (set direct-b accum-b)
+                         (set one-bounce-r accum-r)
+                         (set one-bounce-g accum-g)
+                         (set one-bounce-b accum-b))
                        
                        ;; hit object
                        (let* ((hit-x0 (+ eye-x (* t0 dx)))
@@ -327,8 +382,12 @@
                                                    'nx0 'ny0 'nz0
                                                    'col-r0 'col-g0 'col-b0 'refl-base0)
                          
-                         (let ((r0 0.0f0) (g0 0.0f0) (b0 0.0f0) (refl0 0.0f0))
-                           ,(make-compute-shading 'eye-x 'eye-y 'eye-z 'dx 'dy 'dz 't0 'type0 'idx0 'r0 'g0 'b0 'refl0)
+                         (let ((r0 0.0f0) (g0 0.0f0) (b0 0.0f0) (refl0 0.0f0)
+                               (child1-direct-r 0.0f0) (child1-direct-g 0.0f0) (child1-direct-b 0.0f0))
+                           ,(make-compute-shading 'eye-x 'eye-y 'eye-z 'dx 'dy 'dz 't0 'type0 'idx0 'r0 'g0 'b0 'refl0 'shadow0)
+                           (set direct-r r0)
+                           (set direct-g g0)
+                           (set direct-b b0)
                            
                            (if (> refl0 0.0f0)
                                ;; Stage 1 (depth = 1)
@@ -342,7 +401,11 @@
                                    
                                    (if (= type1 0)
                                        ;; sky 1
-                                       ,(make-compute-sky-color 'dy1 'r1 'g1 'b1)
+                                       (progn
+                                         ,(make-compute-sky-color 'dy1 'r1 'g1 'b1)
+                                         (set child1-direct-r r1)
+                                         (set child1-direct-g g1)
+                                         (set child1-direct-b b1))
                                        
                                        ;; hit object 1
                                        (let* ((hit-x1 (+ ox1 (* t1 dx1)))
@@ -357,6 +420,9 @@
                                          
                                          (let ((r1-base 0.0f0) (g1-base 0.0f0) (b1-base 0.0f0) (refl1 0.0f0))
                                            ,(make-compute-shading 'ox1 'oy1 'oz1 'dx1 'dy1 'dz1 't1 'type1 'idx1 'r1-base 'g1-base 'b1-base 'refl1)
+                                           (set child1-direct-r r1-base)
+                                           (set child1-direct-g g1-base)
+                                           (set child1-direct-b b1-base)
                                            
                                            (if (> refl1 0.0f0)
                                                ;; Stage 2 (depth = 2)
@@ -428,14 +494,140 @@
                                                ,(make-clamp-rgb 'r1-base 'g1-base 'b1-base 'r1 'g1 'b1)))))
                                        
                                        ,(make-compose-reflection 'r0 'g0 'b0 'refl0
-                                                                 'r1 'g1 'b1 'accum-r 'accum-g 'accum-b))))
+                                                                 'r1 'g1 'b1 'accum-r 'accum-g 'accum-b)
+                                       ,(make-compose-reflection 'r0 'g0 'b0 'refl0
+                                                                 'child1-direct-r 'child1-direct-g 'child1-direct-b
+                                                                 'one-bounce-r 'one-bounce-g 'one-bounce-b))
                             
-                            ,(make-clamp-rgb 'r0 'g0 'b0 'accum-r 'accum-g 'accum-b))))
+                            ;; ACCUM-* already contains the recursive reflection
+                            ;; composition.  Clamp that result; clamping R0/G0/B0
+                            ;; here discarded every reflected contribution.
+                            ,(make-clamp-rgb 'accum-r 'accum-g 'accum-b
+                                             'accum-r 'accum-g 'accum-b))))))
               
               ;; Output raw floating-point pixel colors
               (set (aref out-r pixel-idx) accum-r)
               (set (aref out-g pixel-idx) accum-g)
-              (set (aref out-b pixel-idx) accum-b))))))))
+              (set (aref out-b pixel-idx) accum-b)
+              (set (aref out-shadow pixel-idx) shadow0)
+              (set (aref out-direct-r pixel-idx) direct-r)
+              (set (aref out-direct-g pixel-idx) direct-g)
+              (set (aref out-direct-b pixel-idx) direct-b)
+              (set (aref out-one-bounce-r pixel-idx) one-bounce-r)
+              (set (aref out-one-bounce-g pixel-idx) one-bounce-g)
+              (set (aref out-one-bounce-b pixel-idx) one-bounce-b))))))))
+
+;; This kernel deliberately does not participate in rendering.  It traces only
+;; the first reflection ray so that its result can be inspected without
+;; changing the production kernel above.
+;; Output encoding:
+;;   R = primary-surface Fresnel reflectivity
+;;   G = first reflected-ray hit type (0.0 sky, 0.5 sphere, 1.0 plane)
+;;   B = normalized reflected-ray distance (0.0 for sky)
+(eval
+  `(defkernel reflection-path-debug-kernel-v2
+       (void ((out-r float*) (out-g float*) (out-b float*)
+              ;; Shaded colour returned by the first reflection ray.
+              (out-child-r float*) (out-child-g float*) (out-child-b float*)
+              ;; The depth-0 reflection term before addition to the base.
+              (out-contrib-r float*) (out-contrib-g float*) (out-contrib-b float*)
+              ;; 1.0 only when the reflection ray immediately re-hits the
+              ;; primary sphere; used to detect insufficient float ray bias.
+              (out-self-hit float*)
+              (width int) (height int)
+              (width-f cl-cuda:float) (height-f cl-cuda:float)
+              (sphere-cx float*) (sphere-cy float*) (sphere-cz float*)
+              (sphere-r float*)
+              (sphere-col-r float*) (sphere-col-g float*) (sphere-col-b float*)
+              (sphere-refl float*)
+              (num-spheres int)
+              (eye-x cl-cuda:float) (eye-y cl-cuda:float) (eye-z cl-cuda:float)
+              (f-x cl-cuda:float) (f-y cl-cuda:float) (f-z cl-cuda:float)
+              (r-x cl-cuda:float) (r-y cl-cuda:float) (r-z cl-cuda:float)
+              (u-x cl-cuda:float) (u-y cl-cuda:float) (u-z cl-cuda:float)
+              (scale cl-cuda:float)
+              (sky-yr-min cl-cuda:float) (sky-yr-max cl-cuda:float)))
+     (let* ((ix (+ (* cl-cuda:block-idx-x cl-cuda:block-dim-x) cl-cuda:thread-idx-x))
+            (iy (+ (* cl-cuda:block-idx-y cl-cuda:block-dim-y) cl-cuda:thread-idx-y)))
+       (if (< ix width)
+           (if (< iy height)
+               (let* ((pixel-idx (+ (* iy width) ix))
+                      (sx (- (* 2.0f0 (* (+ (* 1.0f0 ix) 0.5f0) (/ 1.0f0 width-f))) 1.0f0))
+                      (sy (- 1.0f0 (* 2.0f0 (* (+ (* 1.0f0 iy) 0.5f0) (/ 1.0f0 height-f)))))
+                      (raw-x (+ f-x (* r-x sx scale) (* u-x sy scale)))
+                      (raw-y (+ f-y (* r-y sx scale) (* u-y sy scale)))
+                      (raw-z (+ f-z (* r-z sx scale) (* u-z sy scale)))
+                      (raw-len (sqrt (+ (* raw-x raw-x) (* raw-y raw-y) (* raw-z raw-z))))
+                      (dx (* raw-x (/ 1.0f0 raw-len)))
+                      (dy (* raw-y (/ 1.0f0 raw-len)))
+                      (dz (* raw-z (/ 1.0f0 raw-len)))
+                      (debug-r 0.0f0) (debug-g 0.0f0) (debug-b 0.0f0)
+                      (child-r 0.0f0) (child-g 0.0f0) (child-b 0.0f0)
+                      (contrib-r 0.0f0) (contrib-g 0.0f0) (contrib-b 0.0f0)
+                      (self-hit 0.0f0))
+                 (let ((t0 1.0f10) (type0 0) (idx0 -1))
+                   ,(make-find-first-hit 'eye-x 'eye-y 'eye-z 'dx 'dy 'dz 't0 'type0 'idx0)
+                   (if (= type0 0)
+                       (progn
+                         (set debug-r 0.0f0)
+                         (set debug-g 0.0f0)
+                         (set debug-b 0.0f0))
+                       (let* ((hit-x0 (+ eye-x (* t0 dx)))
+                              (hit-y0 (+ eye-y (* t0 dy)))
+                              (hit-z0 (+ eye-z (* t0 dz)))
+                              (nx0 0.0f0) (ny0 0.0f0) (nz0 0.0f0)
+                              (col-r0 0.0f0) (col-g0 0.0f0) (col-b0 0.0f0)
+                              (refl-base0 0.0f0))
+                         ,(make-load-surface-data 'type0 'idx0 'hit-x0 'hit-y0 'hit-z0
+                                                   'nx0 'ny0 'nz0
+                                                   'col-r0 'col-g0 'col-b0 'refl-base0)
+                         (let* ((debug-view-dot (+ (* (- dx) nx0) (* (- dy) ny0) (* (- dz) nz0)))
+                                (debug-vdot (if (> debug-view-dot 0.0f0) debug-view-dot 0.0f0))
+                                (refl (+ refl-base0
+                                         (* (- 1.0f0 refl-base0)
+                                            (expt (- 1.0f0 debug-vdot) 5.0f0))))
+                                (ox1 0.0f0) (oy1 0.0f0) (oz1 0.0f0)
+                                (dx1 0.0f0) (dy1 0.0f0) (dz1 0.0f0))
+                           ,(make-update-reflection-ray 'hit-x0 'hit-y0 'hit-z0
+                                                        'dx 'dy 'dz 'nx0 'ny0 'nz0
+                                                        'dx1 'dy1 'dz1 'ox1 'oy1 'oz1)
+                           (let ((t1 1.0f10) (type1 0) (idx1 -1))
+                             ,(make-find-first-hit 'ox1 'oy1 'oz1 'dx1 'dy1 'dz1 't1 'type1 'idx1)
+                             (if (= type0 1)
+                                 (if (= type1 1)
+                                     (if (= idx0 idx1)
+                                         (set self-hit 1.0f0))))
+                             ;; This is the exact child colour that the main
+                             ;; kernel should supply to make-compose-reflection
+                             ;; at depth 0.  It intentionally stops before the
+                             ;; child's own reflection recursion.
+                             (if (= type1 0)
+                                 ,(make-compute-sky-color 'dy1 'child-r 'child-g 'child-b)
+                                 (let ((child-refl 0.0f0))
+                                   ,(make-compute-shading 'ox1 'oy1 'oz1
+                                                          'dx1 'dy1 'dz1
+                                                          't1 'type1 'idx1
+                                                          'child-r 'child-g 'child-b
+                                                          'child-refl)))
+                             (set debug-r refl)
+                             (set debug-g (if (= type1 2) 1.0f0
+                                              (if (= type1 1) 0.5f0 0.0f0)))
+                             (set debug-b (if (= type1 0) 0.0f0
+                                              (/ 1.0f0 (+ 1.0f0 (* 0.001f0 t1)))))
+                             (let ((child-lum (* 0.333f0 (+ (+ child-r child-g) child-b))))
+                               (set contrib-r (* refl child-lum))
+                               (set contrib-g (* refl child-lum))
+                               (set contrib-b (* refl child-lum)))))))
+                 (set (aref out-r pixel-idx) debug-r)
+                 (set (aref out-g pixel-idx) debug-g)
+                 (set (aref out-b pixel-idx) debug-b)
+                 (set (aref out-child-r pixel-idx) child-r)
+                 (set (aref out-child-g pixel-idx) child-g)
+                 (set (aref out-child-b pixel-idx) child-b)
+                 (set (aref out-contrib-r pixel-idx) contrib-r)
+                 (set (aref out-contrib-g pixel-idx) contrib-g)
+                 (set (aref out-contrib-b pixel-idx) contrib-b)
+                 (set (aref out-self-hit pixel-idx) self-hit))))))))
 
 ;; Host side orchestration code
 (defun run-gpu-raytracer (&key (res 8) (output-file "spheres_gpu.ppm"))
@@ -567,9 +759,28 @@
       (format t "Initializing CUDA Context...~%")
       (with-cuda (0)
         (format t "Allocating GPU Memory Blocks...~%")
-        (with-memory-blocks ((out-r 'cl-cuda:float size)
+          (with-memory-blocks ((out-r 'cl-cuda:float size)
                              (out-g 'cl-cuda:float size)
                              (out-b 'cl-cuda:float size)
+                             (out-shadow 'cl-cuda:float size)
+                             (out-direct-r 'cl-cuda:float size)
+                             (out-direct-g 'cl-cuda:float size)
+                             (out-direct-b 'cl-cuda:float size)
+                             (out-one-bounce-r 'cl-cuda:float size)
+                             (out-one-bounce-g 'cl-cuda:float size)
+                             (out-one-bounce-b 'cl-cuda:float size)
+                             ;; Reflection-path diagnostics: geometry, child
+                             ;; shading, and the depth-0 reflected term.
+                             (out-reflect-path-r 'cl-cuda:float size)
+                             (out-reflect-path-g 'cl-cuda:float size)
+                             (out-reflect-path-b 'cl-cuda:float size)
+                             (out-reflect-child-r 'cl-cuda:float size)
+                             (out-reflect-child-g 'cl-cuda:float size)
+                             (out-reflect-child-b 'cl-cuda:float size)
+                             (out-reflect-contrib-r 'cl-cuda:float size)
+                             (out-reflect-contrib-g 'cl-cuda:float size)
+                             (out-reflect-contrib-b 'cl-cuda:float size)
+                             (out-reflect-self-hit 'cl-cuda:float size)
                              (sph-cx 'cl-cuda:float num-spheres)
                              (sph-cy 'cl-cuda:float num-spheres)
                              (sph-cz 'cl-cuda:float num-spheres)
@@ -615,9 +826,11 @@
           
           ;; Bump the kernel symbol whenever the generated program changes so
           ;; cl-cuda cannot reuse a module compiled for an older definition.
-          (format t "Launching CUDA kernel v7 (Grid: ~Ax~A, Block: ~Ax~A)...~%" grid-x grid-y block-x block-y)
+          (format t "Launching CUDA kernel v10 (Grid: ~Ax~A, Block: ~Ax~A)...~%" grid-x grid-y block-x block-y)
           (let ((start-time (get-internal-real-time)))
-            (raytrace-kernel-v7 out-r out-g out-b
+            (raytrace-kernel-v10 out-r out-g out-b out-shadow
+                             out-direct-r out-direct-g out-direct-b
+                             out-one-bounce-r out-one-bounce-g out-one-bounce-b
                              width height
                              width-f height-f
                              sph-cx sph-cy sph-cz
@@ -633,15 +846,64 @@
                              sky-yr-min sky-yr-max
                              :grid-dim (list grid-x grid-y 1)
                              :block-dim (list block-x block-y 1))
+
+            ;; This diagnostic follows the same first reflection ray but
+            ;; exposes its geometry and child shading separately.  It does
+            ;; not feed back into the production render.
+            (reflection-path-debug-kernel-v2
+             out-reflect-path-r out-reflect-path-g out-reflect-path-b
+             out-reflect-child-r out-reflect-child-g out-reflect-child-b
+             out-reflect-contrib-r out-reflect-contrib-g out-reflect-contrib-b
+             out-reflect-self-hit
+             width height width-f height-f
+             sph-cx sph-cy sph-cz sph-r
+             sph-col-r sph-col-g sph-col-b sph-refl num-spheres
+             eye-x eye-y eye-z fx fy fz rx ry rz ux uy uz scale
+             sky-yr-min sky-yr-max
+             :grid-dim (list grid-x grid-y 1)
+             :block-dim (list block-x block-y 1))
             
             ;; Copy rendered pixels from GPU device to host memory
             (sync-memory-block out-r :device-to-host)
             (sync-memory-block out-g :device-to-host)
             (sync-memory-block out-b :device-to-host)
-            
+            (sync-memory-block out-shadow :device-to-host)
+            (sync-memory-block out-direct-r :device-to-host)
+            (sync-memory-block out-direct-g :device-to-host)
+            (sync-memory-block out-direct-b :device-to-host)
+            (sync-memory-block out-one-bounce-r :device-to-host)
+            (sync-memory-block out-one-bounce-g :device-to-host)
+            (sync-memory-block out-one-bounce-b :device-to-host)
+            (sync-memory-block out-reflect-path-r :device-to-host)
+            (sync-memory-block out-reflect-path-g :device-to-host)
+            (sync-memory-block out-reflect-path-b :device-to-host)
+            (sync-memory-block out-reflect-child-r :device-to-host)
+            (sync-memory-block out-reflect-child-g :device-to-host)
+            (sync-memory-block out-reflect-child-b :device-to-host)
+            (sync-memory-block out-reflect-contrib-r :device-to-host)
+            (sync-memory-block out-reflect-contrib-g :device-to-host)
+            (sync-memory-block out-reflect-contrib-b :device-to-host)
+            (sync-memory-block out-reflect-self-hit :device-to-host)
             (let* ((end-time (get-internal-real-time))
                    (elapsed (/ (float (- end-time start-time)) internal-time-units-per-second)))
               (format t "GPU Raytracing completed in ~,4F seconds.~%" elapsed)))
           
           (write-ppm output-file width height size out-r out-g out-b)
+          (write-ppm "spheres_gpu_shadow-factor-debug.ppm" width height size
+                     out-shadow out-shadow out-shadow)
+          ;; A/B image for isolating recursive-reflection artifacts.  This is
+          ;; the exact primary shading used by the production kernel, before
+          ;; its first reflected contribution is added.
+          (write-ppm "spheres_gpu_direct-debug.ppm" width height size
+                     out-direct-r out-direct-g out-direct-b)
+          (write-ppm "spheres_gpu_one-bounce-debug.ppm" width height size
+                     out-one-bounce-r out-one-bounce-g out-one-bounce-b)
+          (write-ppm "spheres_gpu_reflection-path-debug.ppm" width height size
+                     out-reflect-path-r out-reflect-path-g out-reflect-path-b)
+          (write-ppm "spheres_gpu_reflection-child-debug.ppm" width height size
+                     out-reflect-child-r out-reflect-child-g out-reflect-child-b)
+          (write-ppm "spheres_gpu_reflection-contribution-debug.ppm" width height size
+                     out-reflect-contrib-r out-reflect-contrib-g out-reflect-contrib-b)
+          (write-ppm "spheres_gpu_reflection-self-hit-debug.ppm" width height size
+                     out-reflect-self-hit out-reflect-self-hit out-reflect-self-hit)
           (format t "Rendering Job Successful!~%"))))))

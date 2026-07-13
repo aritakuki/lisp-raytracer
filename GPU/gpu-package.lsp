@@ -1,0 +1,16 @@
+;;;; gpu-package.lsp
+;;;; Shared package and cl-cuda imports for every GPU module.
+
+(ql:quickload :cl-cuda)
+
+(defpackage :gpu-raytracer
+  (:use :cl)
+  (:import-from :cl-cuda
+                :defkernel
+                :with-cuda
+                :with-memory-blocks
+                :memory-block-aref
+                :sync-memory-block
+                :void :float* :int* :int)
+  (:export :run-gpu-raytracer
+           :verify-kernel-structure))

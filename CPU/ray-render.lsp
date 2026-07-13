@@ -2,15 +2,10 @@
 (defparameter *sky-yr-max* 1.0d0)
 
 (defun update-sky-range ()
-  ;; 画面上端
   (multiple-value-bind (xr1 yr1 zr1)
       (camera-ray 0.0d0 1.0d0)
-
-    ;; 画面中央
     (multiple-value-bind (xr2 yr2 zr2)
-        (camera-ray 0.0d0 0.0d0)
-
-      ;; 上の方を空とみなす
+        (camera-ray 0.0d0 -1.0d0)
       (setf *sky-yr-min* (min yr1 yr2)
             *sky-yr-max* (max yr1 yr2)))))
 

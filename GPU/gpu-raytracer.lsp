@@ -833,22 +833,39 @@
     (setf sphere-data nil)
     ;; 3 large spheres.  FRAME uses the same sinusoidal paths as the CPU
     ;; animation; NIL preserves the still-image scene exactly.
-    (let ((frame-f (if frame (float frame 1.0f0) 0.0f0))
+    (let* ((frame-f (if frame (float frame 1.0f0) 0.0f0))
+           ;; FRAME is sampled at the animation's 60fps output rate.  These
+           ;; low, mutually different angular velocities deliberately do not
+           ;; complete a cycle during the default five-second clip.
+           (animation-time (* frame-f (/ 1.0f0 60.0f0)))
           ;; The animated CPU scene's material setup also applies to a
-          ;; single still frame: the green large sphere is glass.
-          (red-refl (if frame 0.2f0 0.02f0))
-          (green-ior 1.1f0))
-      (push (list (* 150.0f0 (sin (* frame-f 0.1f0)))
-                  -300.0f0 -1200.0f0 200.0f0
+           ;; single still frame: the green large sphere is glass.
+           (red-refl (if frame 0.2f0 0.02f0))
+           (green-ior 1.1f0)
+           (red-x (if frame
+                      (+ (* 170.0f0 (sin (* animation-time 0.85f0)))
+                         (* 45.0f0 (sin (+ (* animation-time 1.90f0) 0.40f0))))
+                      0.0f0))
+           (red-y (if frame (+ -300.0f0 (* 55.0f0 (cos (* animation-time 0.55f0)))) -300.0f0))
+           (red-z (if frame (+ -1200.0f0 (* 60.0f0 (sin (* animation-time 0.40f0)))) -1200.0f0))
+           (green-x (if frame (+ -80.0f0 (* 80.0f0 (cos (+ (* animation-time 0.38f0) 0.20f0)))) -80.0f0))
+           (green-y (if frame (+ -150.0f0 (* 120.0f0 (sin (+ (* animation-time 0.72f0) 0.30f0)))) -150.0f0))
+           (green-z (if frame (+ -1200.0f0 (* 110.0f0 (sin (+ (* animation-time 0.47f0) 0.90f0)))) -1200.0f0))
+           (blue-x (if frame (+ 70.0f0 (* 130.0f0 (sin (* animation-time 0.51f0)))) 70.0f0))
+           (blue-y (if frame (+ -100.0f0 (* 70.0f0 (sin (+ (* animation-time 1.13f0) 0.80f0)))) -100.0f0))
+           (blue-z (if frame (+ -1200.0f0 (* 170.0f0 (cos (* animation-time 0.31f0)))) -1200.0f0)))
+      ;; Red: a broad drifting Lissajous path.
+      (push (list red-x red-y red-z
+                  200.0f0
                   0.8f0 0.2f0 0.2f0 red-refl 1.0f0)
             sphere-data)
-      (push (list -80.0f0
-                  (+ -150.0f0 (* 100.0f0 (sin (* frame-f 0.15f0))))
-                  -1200.0f0 200.0f0
+      ;; Green glass: a slower diagonal sweep with independent depth motion.
+      (push (list green-x green-y green-z
+                  200.0f0
                   0.2f0 0.8f0 0.2f0 0.2f0 green-ior)
             sphere-data)
-      (push (list 70.0f0 -100.0f0
-                  (+ -1200.0f0 (* 200.0f0 (sin (* frame-f 0.12f0))))
+      ;; Blue: a separate rolling path, offset in all three dimensions.
+      (push (list blue-x blue-y blue-z
                   200.0f0 0.2f0 0.2f0 0.9f0 0.2f0 1.0f0)
             sphere-data))
     ;; Small spheres (matching CPU order and random generation)
@@ -1074,7 +1091,7 @@
                        out-reflect-self-hit out-reflect-self-hit out-reflect-self-hit))
           (format t "Rendering Job Successful!~%"))))))
 
-(defun run-gpu-animation (&key (frames 60) (res 8)
+(defun run-gpu-animation (&key (frames 300) (res 8)
                                 (frame-directory "frames_gpu"))
   "Render FRAMES GPU animation frames into FRAME-DIRECTORY.
 

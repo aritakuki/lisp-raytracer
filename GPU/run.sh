@@ -1,6 +1,6 @@
 #!/bin/bash
 # Render the GPU raytracer and encode its animation in the current environment.
-# The default is a 60-frame, 60fps (one second) MP4 suitable for Google Colab.
+# The default is a 300-frame, 60fps (five second) MP4 suitable for Google Colab.
 
 set -euo pipefail
 
@@ -8,7 +8,7 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
 MODE="${MODE:-animation}"
 RES="${RES:-8}"
-FRAMES="${FRAMES:-60}"
+FRAMES="${FRAMES:-300}"
 FPS="${FPS:-60}"
 FRAME_DIR="${FRAME_DIR:-frames_gpu}"
 OUTPUT_VIDEO="${OUTPUT_VIDEO:-spheres_gpu_animation.mp4}"

@@ -13,4 +13,5 @@
                 :sync-memory-block
                 :void :float* :int* :int)
   (:export :run-gpu-raytracer
+           :run-gpu-animation
            :verify-kernel-structure))

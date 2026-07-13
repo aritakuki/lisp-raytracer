@@ -630,7 +630,9 @@
                  (set (aref out-self-hit pixel-idx) self-hit))))))))
 
 ;; Host side orchestration code
-(defun run-gpu-raytracer (&key (res 8) (output-file "spheres_gpu.ppm"))
+(defun run-gpu-raytracer (&key (res 8) (output-file "spheres_gpu.ppm")
+                               frame
+                               (write-debug-images t))
   (let* ((width (* res 100))
          (height (* res 100))
          (size (* width height))
@@ -693,10 +695,22 @@
     (setf *random-state* (make-random-state cl-user::*cpu-init-random-state*))
     ;; Define Scene Objects (dynamically generating to match CPU SBCL random state)
     (setf sphere-data nil)
-    ;; 3 large spheres
-    (push (list 0.0f0 -300.0f0 -1200.0f0 200.0f0 0.8f0 0.2f0 0.2f0 0.02f0) sphere-data)
-    (push (list -80.0f0 -150.0f0 -1200.0f0 200.0f0 0.2f0 0.8f0 0.2f0 0.2f0) sphere-data)
-    (push (list 70.0f0 -100.0f0 -1200.0f0 200.0f0 0.2f0 0.2f0 0.9f0 0.2f0) sphere-data)
+    ;; 3 large spheres.  FRAME uses the same sinusoidal paths as the CPU
+    ;; animation; NIL preserves the still-image scene exactly.
+    (let ((frame-f (if frame (float frame 1.0f0) 0.0f0)))
+      (push (list (* 150.0f0 (sin (* frame-f 0.1f0)))
+                  -300.0f0 -1200.0f0 200.0f0
+                  0.8f0 0.2f0 0.2f0 0.02f0)
+            sphere-data)
+      (push (list -80.0f0
+                  (+ -150.0f0 (* 100.0f0 (sin (* frame-f 0.15f0))))
+                  -1200.0f0 200.0f0
+                  0.2f0 0.8f0 0.2f0 0.2f0)
+            sphere-data)
+      (push (list 70.0f0 -100.0f0
+                  (+ -1200.0f0 (* 200.0f0 (sin (* frame-f 0.12f0))))
+                  200.0f0 0.2f0 0.2f0 0.9f0 0.2f0)
+            sphere-data))
     ;; Small spheres (matching CPU order and random generation)
     (do ((x -2 (1+ x)))
         ((> x 2))
@@ -849,19 +863,21 @@
 
             ;; This diagnostic follows the same first reflection ray but
             ;; exposes its geometry and child shading separately.  It does
-            ;; not feed back into the production render.
-            (reflection-path-debug-kernel-v2
-             out-reflect-path-r out-reflect-path-g out-reflect-path-b
-             out-reflect-child-r out-reflect-child-g out-reflect-child-b
-             out-reflect-contrib-r out-reflect-contrib-g out-reflect-contrib-b
-             out-reflect-self-hit
-             width height width-f height-f
-             sph-cx sph-cy sph-cz sph-r
-             sph-col-r sph-col-g sph-col-b sph-refl num-spheres
-             eye-x eye-y eye-z fx fy fz rx ry rz ux uy uz scale
-             sky-yr-min sky-yr-max
-             :grid-dim (list grid-x grid-y 1)
-             :block-dim (list block-x block-y 1))
+            ;; not feed back into the production render, and is skipped for
+            ;; animation frames to avoid producing 60 sets of debug images.
+            (when write-debug-images
+              (reflection-path-debug-kernel-v2
+               out-reflect-path-r out-reflect-path-g out-reflect-path-b
+               out-reflect-child-r out-reflect-child-g out-reflect-child-b
+               out-reflect-contrib-r out-reflect-contrib-g out-reflect-contrib-b
+               out-reflect-self-hit
+               width height width-f height-f
+               sph-cx sph-cy sph-cz sph-r
+               sph-col-r sph-col-g sph-col-b sph-refl num-spheres
+               eye-x eye-y eye-z fx fy fz rx ry rz ux uy uz scale
+               sky-yr-min sky-yr-max
+               :grid-dim (list grid-x grid-y 1)
+               :block-dim (list block-x block-y 1)))
             
             ;; Copy rendered pixels from GPU device to host memory
             (sync-memory-block out-r :device-to-host)
@@ -874,36 +890,58 @@
             (sync-memory-block out-one-bounce-r :device-to-host)
             (sync-memory-block out-one-bounce-g :device-to-host)
             (sync-memory-block out-one-bounce-b :device-to-host)
-            (sync-memory-block out-reflect-path-r :device-to-host)
-            (sync-memory-block out-reflect-path-g :device-to-host)
-            (sync-memory-block out-reflect-path-b :device-to-host)
-            (sync-memory-block out-reflect-child-r :device-to-host)
-            (sync-memory-block out-reflect-child-g :device-to-host)
-            (sync-memory-block out-reflect-child-b :device-to-host)
-            (sync-memory-block out-reflect-contrib-r :device-to-host)
-            (sync-memory-block out-reflect-contrib-g :device-to-host)
-            (sync-memory-block out-reflect-contrib-b :device-to-host)
-            (sync-memory-block out-reflect-self-hit :device-to-host)
+            (when write-debug-images
+              (sync-memory-block out-reflect-path-r :device-to-host)
+              (sync-memory-block out-reflect-path-g :device-to-host)
+              (sync-memory-block out-reflect-path-b :device-to-host)
+              (sync-memory-block out-reflect-child-r :device-to-host)
+              (sync-memory-block out-reflect-child-g :device-to-host)
+              (sync-memory-block out-reflect-child-b :device-to-host)
+              (sync-memory-block out-reflect-contrib-r :device-to-host)
+              (sync-memory-block out-reflect-contrib-g :device-to-host)
+              (sync-memory-block out-reflect-contrib-b :device-to-host)
+              (sync-memory-block out-reflect-self-hit :device-to-host))
             (let* ((end-time (get-internal-real-time))
                    (elapsed (/ (float (- end-time start-time)) internal-time-units-per-second)))
               (format t "GPU Raytracing completed in ~,4F seconds.~%" elapsed)))
           
           (write-ppm output-file width height size out-r out-g out-b)
-          (write-ppm "spheres_gpu_shadow-factor-debug.ppm" width height size
-                     out-shadow out-shadow out-shadow)
-          ;; A/B image for isolating recursive-reflection artifacts.  This is
-          ;; the exact primary shading used by the production kernel, before
-          ;; its first reflected contribution is added.
-          (write-ppm "spheres_gpu_direct-debug.ppm" width height size
-                     out-direct-r out-direct-g out-direct-b)
-          (write-ppm "spheres_gpu_one-bounce-debug.ppm" width height size
-                     out-one-bounce-r out-one-bounce-g out-one-bounce-b)
-          (write-ppm "spheres_gpu_reflection-path-debug.ppm" width height size
-                     out-reflect-path-r out-reflect-path-g out-reflect-path-b)
-          (write-ppm "spheres_gpu_reflection-child-debug.ppm" width height size
-                     out-reflect-child-r out-reflect-child-g out-reflect-child-b)
-          (write-ppm "spheres_gpu_reflection-contribution-debug.ppm" width height size
-                     out-reflect-contrib-r out-reflect-contrib-g out-reflect-contrib-b)
-          (write-ppm "spheres_gpu_reflection-self-hit-debug.ppm" width height size
-                     out-reflect-self-hit out-reflect-self-hit out-reflect-self-hit)
+          (when write-debug-images
+            (write-ppm "spheres_gpu_shadow-factor-debug.ppm" width height size
+                       out-shadow out-shadow out-shadow)
+            ;; A/B image for isolating recursive-reflection artifacts.  This is
+            ;; the exact primary shading used by the production kernel, before
+            ;; its first reflected contribution is added.
+            (write-ppm "spheres_gpu_direct-debug.ppm" width height size
+                       out-direct-r out-direct-g out-direct-b)
+            (write-ppm "spheres_gpu_one-bounce-debug.ppm" width height size
+                       out-one-bounce-r out-one-bounce-g out-one-bounce-b)
+            (write-ppm "spheres_gpu_reflection-path-debug.ppm" width height size
+                       out-reflect-path-r out-reflect-path-g out-reflect-path-b)
+            (write-ppm "spheres_gpu_reflection-child-debug.ppm" width height size
+                       out-reflect-child-r out-reflect-child-g out-reflect-child-b)
+            (write-ppm "spheres_gpu_reflection-contribution-debug.ppm" width height size
+                       out-reflect-contrib-r out-reflect-contrib-g out-reflect-contrib-b)
+            (write-ppm "spheres_gpu_reflection-self-hit-debug.ppm" width height size
+                       out-reflect-self-hit out-reflect-self-hit out-reflect-self-hit))
           (format t "Rendering Job Successful!~%"))))))
+
+(defun run-gpu-animation (&key (frames 60) (res 8)
+                                (frame-directory "frames_gpu"))
+  "Render FRAMES GPU animation frames into FRAME-DIRECTORY.
+
+The caller creates FRAME-DIRECTORY.  Keeping frame generation in one SBCL
+process lets cl-cuda reuse its compiled kernel module; run.sh encodes the
+resulting numbered PPM sequence to MP4 with FFmpeg."
+  (unless (plusp frames)
+    (error "FRAMES must be positive, got ~S." frames))
+  (let ((directory (string-right-trim '(#\/) frame-directory)))
+    (dotimes (frame frames)
+      (format t "~&=== Rendering GPU animation frame ~D/~D ===~%"
+              (1+ frame) frames)
+      (run-gpu-raytracer
+       :res res
+       :frame frame
+       :write-debug-images nil
+       :output-file (format nil "~A/spheres_frame_~3,'0d.ppm"
+                            directory frame)))))

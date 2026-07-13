@@ -29,6 +29,7 @@ echo "=== Loading cl-cuda ==="
 sbcl --non-interactive --load "$HOME/quicklisp/setup.lisp" --eval "(ql:quickload :cl-cuda)"
 
 cd "$SCRIPT_DIR"
+mkdir -p generated-cuda
 
 echo "=== Verifying expanded GPU kernel ==="
 sbcl --noinform --non-interactive --load verify-expanded-kernel.lsp
@@ -37,4 +38,5 @@ sbcl --non-interactive \
     --eval "(defparameter *cpu-init-random-state* (make-random-state nil))" \
     --load "$HOME/quicklisp/setup.lisp" \
     --load gpu-main.lsp \
+    --eval "(setf cl-cuda.api.nvcc:*tmp-path* \"$SCRIPT_DIR/generated-cuda/\")" \
     --eval "(gpu-raytracer:run-gpu-raytracer :res 8 :output-file \"spheres_gpu.ppm\")"

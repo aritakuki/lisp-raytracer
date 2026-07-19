@@ -75,13 +75,15 @@ One GPU kernel launch produced it and it was saved as a file.")))
             ("実際の配置（上から）" . "Actual layout (top view)")
             ("同じ実座標を拡大（上から）" . "Same coordinates, zoomed in (top view)")
             ("当たり点" . "Hit point") ("光は全方向へ広がる" . "Light spreads in all directions")
-            ("最初に出すレイ（主レイ）" . "First ray (primary ray)")
-            ("光が届くか調べるレイ（影レイ）" . "Tests light visibility (shadow ray)")
-            ("直接照明：光源からHへ届く明るさ" . "Direct lighting: brightness reaching H from the light")
-            ("反射した先を調べるレイ（反射レイ）" . "Tests what is reflected (reflection ray)")
+            ("最初に出すレイ（主レイ）" . "Primary ray")
+            ("光が届くか調べるレイ（影レイ）" . "Shadow ray")
+            ("直接照明：光源からHへ届く明るさ" . "Direct light")
+            ("反射した先を調べるレイ（反射レイ）" . "Reflection ray")
             ("1ブロック：16 × 16画素" . "One block: 16 × 16 pixels")
             ("この橙の四角が1ブロック" . "This orange square is one block")
-            ("この全体が" . "This whole block")
+            ;; The arrow itself shows the full left-hand block maps to the
+            ;; highlighted orange block, so no label is needed on the arrow.
+            ("この全体が" . "")
             ("完成画像の1画素" . "One pixel in the final image")
             ("1 スレッド" . "One thread") ("主レイ" . "Primary ray") ("影レイ" . "Shadow ray")
             ("全画素の最終RGB配列" . "Final RGB array for all pixels")
@@ -395,7 +397,7 @@ than becoming a separate illustrative scene."
                     ;; on the selected orange block rather than behind it.
                     (format stream "<path d=\"M600,260 H800\" stroke=\"#ff9f1c\" stroke-width=\"6\" fill=\"none\" marker-end=\"url(#arrow-orange)\"/><text x=\"610\" y=\"235\" fill=\"#ffcf70\" font-size=\"20\">この全体が</text>~%"))
                    (:thread-flow
-                    (format stream "<text x=\"70\" y=\"105\" fill=\"#8ed0ff\" font-size=\"26\">完成画像の1画素</text><rect x=\"75\" y=\"140\" width=\"190\" height=\"190\" fill=\"#1b2c3d\" stroke=\"#52b7ff\" stroke-width=\"4\"/><g stroke=\"#789\" stroke-width=\"2\"><path d=\"M122,140 V330 M170,140 V330 M218,140 V330 M75,187 H265 M75,235 H265 M75,282 H265\"/></g><rect x=\"170\" y=\"235\" width=\"48\" height=\"47\" fill=\"#52b7ff\"/><path d=\"M290,235 H365\" stroke=\"#ff9f1c\" stroke-width=\"5\" fill=\"none\" marker-end=\"url(#arrow-orange)\"/><rect x=\"390\" y=\"145\" width=\"270\" height=\"180\" rx=\"18\" fill=\"#1b2c3d\" stroke=\"#ff9f1c\" stroke-width=\"4\"/><text x=\"475\" y=\"190\" fill=\"#ffcf70\" font-size=\"30\">1 スレッド</text><path d=\"M435,230 H505 H575\" stroke=\"#52b7ff\" stroke-width=\"5\" fill=\"none\" marker-end=\"url(#arrow-blue)\"/><text x=\"420\" y=\"275\" fill=\"#8ed0ff\" font-size=\"22\">主レイ</text><path d=\"M575,230 H625\" stroke=\"#7ee787\" stroke-width=\"4\" fill=\"none\" stroke-dasharray=\"9 6\" marker-end=\"url(#arrow-green)\"/><text x=\"565\" y=\"275\" fill=\"#a7f3b1\" font-size=\"22\">影レイ</text><path d=\"M685,235 H780\" stroke=\"#ff9f1c\" stroke-width=\"5\" fill=\"none\" marker-end=\"url(#arrow-orange)\"/><rect x=\"820\" y=\"170\" width=\"210\" height=\"130\" rx=\"16\" fill=\"#1b2c3d\" stroke=\"#7ee787\" stroke-width=\"4\"/><text x=\"872\" y=\"225\" fill=\"#a7f3b1\" font-size=\"30\">最終RGB</text><g><rect x=\"865\" y=\"245\" width=\"42\" height=\"24\" fill=\"#f55\"/><rect x=\"912\" y=\"245\" width=\"42\" height=\"24\" fill=\"#5f5\"/><rect x=\"959\" y=\"245\" width=\"42\" height=\"24\" fill=\"#55f\"/></g>~%"))
+                    (format stream "<text x=\"70\" y=\"105\" fill=\"#8ed0ff\" font-size=\"26\">完成画像の1画素</text><rect x=\"75\" y=\"140\" width=\"190\" height=\"190\" fill=\"#1b2c3d\" stroke=\"#52b7ff\" stroke-width=\"4\"/><g stroke=\"#789\" stroke-width=\"2\"><path d=\"M122,140 V330 M170,140 V330 M218,140 V330 M75,187 H265 M75,235 H265 M75,282 H265\"/></g><rect x=\"170\" y=\"235\" width=\"48\" height=\"47\" fill=\"#52b7ff\"/><path d=\"M290,235 H365\" stroke=\"#ff9f1c\" stroke-width=\"5\" fill=\"none\" marker-end=\"url(#arrow-orange)\"/><rect x=\"390\" y=\"145\" width=\"270\" height=\"180\" rx=\"18\" fill=\"#1b2c3d\" stroke=\"#ff9f1c\" stroke-width=\"4\"/><text x=\"475\" y=\"190\" fill=\"#ffcf70\" font-size=\"30\">1 スレッド</text><path d=\"M435,230 H505 H575\" stroke=\"#52b7ff\" stroke-width=\"5\" fill=\"none\" marker-end=\"url(#arrow-blue)\"/><text x=\"410\" y=\"275\" fill=\"#8ed0ff\" font-size=\"18\">主レイ</text><path d=\"M575,230 H625\" stroke=\"#7ee787\" stroke-width=\"4\" fill=\"none\" stroke-dasharray=\"9 6\" marker-end=\"url(#arrow-green)\"/><text x=\"535\" y=\"275\" fill=\"#a7f3b1\" font-size=\"18\">影レイ</text><path d=\"M685,235 H780\" stroke=\"#ff9f1c\" stroke-width=\"5\" fill=\"none\" marker-end=\"url(#arrow-orange)\"/><rect x=\"820\" y=\"170\" width=\"210\" height=\"130\" rx=\"16\" fill=\"#1b2c3d\" stroke=\"#7ee787\" stroke-width=\"4\"/><text x=\"872\" y=\"225\" fill=\"#a7f3b1\" font-size=\"30\">最終RGB</text><g><rect x=\"865\" y=\"245\" width=\"42\" height=\"24\" fill=\"#f55\"/><rect x=\"912\" y=\"245\" width=\"42\" height=\"24\" fill=\"#5f5\"/><rect x=\"959\" y=\"245\" width=\"42\" height=\"24\" fill=\"#55f\"/></g>~%"))
                    (:scheduling
                     ;; Keep the scheduling diagram visual.  The subtitle
                     ;; introduces the terms, so labels cannot overflow boxes.

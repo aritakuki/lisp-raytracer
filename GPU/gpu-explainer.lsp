@@ -7,7 +7,7 @@
 (declaim (ftype function write-ppm write-ppm-with-pixel-marker
                           run-gpu-raytracer))
 
-(defparameter *explainer-stages*
+(defparameter *explainer-stages-en*
   '(("00-title.ppm" "A Hobby Ray Tracer in Common Lisp and GPU")
     ("01-intro.ppm" "What Is a Ray Tracer?")
     ("02-scene.ppm" "Lisp places the camera, light, sky, floor, and spheres.
@@ -44,6 +44,56 @@ Final RGB is copied from GPU to CPU for saving.")
 The CPU saves the final RGB array copied from the GPU.")
     ("15-final.ppm" "This finished image has final RGB values for every pixel.
 One GPU kernel launch produced it and it was saved as a file.")))
+
+(defparameter *explainer-stages-ja*
+  '(("00-title.ppm" "Common Lisp と GPUで学ぶ 趣味のレイトレーシング")
+    ("01-intro.ppm" "レイトレーサーとは")
+    ("02-scene.ppm" "まず、Lisp（CPU側）がシミュレーション空間にカメラ・光源・空・床・球を配置します。
+位置・半径・色・材質の値を配列にしてGPUへ送ります。")
+    ("03-ray-direction.ppm" "光源は実際には全方向へ光を出します。
+橙は L→H→C の代表経路。GPUはこれをカメラ側から逆向きに追跡します。")
+    ("04-pixel.ppm" "これはGPUが出力する完成画像です。黄色い小枠の1マスが、これから追う1画素です。
+この1画素の色を求めるために、カメラからレイを出します。")
+    ("05-primary-ray.ppm" "選んだ1画素の色を調べるため、カメラから最初に出すレイ（主レイ）です。
+最初に当たった表面Hを見つけ、そこで色の計算を始めます。")
+    ("06-shadow-ray.ppm" "表面Hから光源へ、光が届くかを調べるレイ（影レイ）です。
+途中に物体があれば、その光は表面Hには届かず、影になります。")
+    ("07-local-shading.ppm" "直接照明は、光源から表面Hへ届く明るさです。
+その明るさと材質の色・面の向き・影レイの結果が、この画素の色を決めます。")
+    ("08-reflection-ray.ppm" "反射する物体では、表面Hから反射した先を調べるレイ（反射レイ）を出します。
+そこで見つけた色も足して、この画素の最終RGBを決めます。")
+    ("09-grid.ppm" "このプログラムでは、16×16画素を一組にし、その組をブロックと呼びます。
+画面全体を一度に渡すのではなく、ブロック単位に分けてGPUへ仕事を渡します。")
+    ("10-thread-flow.ppm" "ブロック内の各画素は、スレッドという計算担当に渡されます。
+1スレッドが、1画素の色を最初のレイから最終RGBまで計算します。")
+    ("11-scheduling.ppm" "800×800画素を、16×16画素の2500ブロックに分けます。
+SM（Streaming Multiprocessor）は、ブロックのスレッドを実行する装置です。")
+    ("12-progress-01.ppm" "ここから、Lispが配置したカメラ・空・球・床・光源をGPUが計算します。
+開始直後は、最終色を出し終えた画素がまだごく一部です。")
+    ("12-progress-02.ppm" "先に終えた画素では、Lispが指定した空・球・床の色が現れます。
+影レイで光が遮られた場所は、同じ材質でも暗くなります。")
+    ("12-progress-03.ppm" "各画素では、主レイ（カメラから最初に出すレイ）で表面を見つけ、影レイで光の遮りを調べます。
+反射する球では反射レイの結果も加え、表面に周囲の色や明るさを映します。")
+    ("12-progress-04.ppm" "完了した画素が増えるにつれ、空・球・床・影の形が見えてきます。
+色の位置は、Lispが配置した物体と光源から計算された結果です。")
+    ("12-progress-05.ppm" "全画素の計算が終わり、Lispが置いたシーン全体が画像になりました。
+この完成したRGB配列をGPUからCPUへコピーして保存します。")
+    ("14-transfer.ppm" "PPM（Portable Pixmap）は、画像の各画素の色をR・G・Bの数値として保存する
+シンプルな画像ファイルです。GPUが計算した最終RGB配列をCPUへコピーして保存します。")
+    ("15-final.ppm" "全画素の最終RGB値がそろった完成画像です。
+1回のGPUカーネル実行で計算した結果を、画像ファイルに保存しました。")))
+
+(defparameter *explainer-language* :ja)
+
+(defun %normalize-explainer-language (language)
+  (ecase language
+    (:ja :ja)
+    (:en :en)))
+
+(defun %explainer-stages ()
+  (ecase *explainer-language*
+    (:ja *explainer-stages-ja*)
+    (:en *explainer-stages-en*)))
 
 (defun %explainer-directory (directory)
   (make-pathname :name nil :type nil
@@ -416,7 +466,8 @@ than becoming a separate illustrative scene."
         (write-runtime-diagram "thread-flow.svg" "スレッド" :thread-flow)
         (write-runtime-diagram "scheduling.svg" "実行" :scheduling)
         (write-runtime-diagram "transfer.svg" "転送" :transfer)
-        (localize-explainer-svgs directory)))))
+        (when (eq *explainer-language* :en)
+          (localize-explainer-svgs directory))))))
 
 (defun write-explainer-stage-images
     (directory width height size marker-x marker-y
@@ -450,7 +501,7 @@ than becoming a separate illustrative scene."
 
 (defun %validate-explainer-captions ()
   "Reject captions that would create accidental or unreadable subtitle breaks."
-  (dolist (stage *explainer-stages*)
+  (dolist (stage (%explainer-stages))
     (let ((caption (second stage))
           (line-length 0)
           (line-count 1))
@@ -475,7 +526,7 @@ than becoming a separate illustrative scene."
   (%validate-explainer-captions)
   (with-open-file (stream (%explainer-path directory "explanation.srt")
                           :direction :output :if-exists :supersede)
-    (loop for (filename caption) in *explainer-stages*
+    (loop for (filename caption) in (%explainer-stages)
           for index from 1
           for start = (* (1- index) seconds-per-stage)
           for end = (* index seconds-per-stage)
@@ -490,7 +541,7 @@ than becoming a separate illustrative scene."
     (format stream "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding~%")
     (format stream "Style: Default,Noto Sans CJK JP,30,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,0,8,120,120,36,1~%~%")
     (format stream "[Events]~%Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text~%")
-    (loop for (filename caption) in *explainer-stages*
+    (loop for (filename caption) in (%explainer-stages)
           for index from 1
           for start = (* (1- index) seconds-per-stage)
           for end = (* index seconds-per-stage)
@@ -500,10 +551,10 @@ than becoming a separate illustrative scene."
   (with-open-file (stream (%explainer-path directory "storyboard.ffconcat")
                           :direction :output :if-exists :supersede)
     (format stream "ffconcat version 1.0~%")
-    (dolist (stage *explainer-stages*)
+    (dolist (stage (%explainer-stages))
       (format stream "file '~A'~%duration ~D~%" (first stage) seconds-per-stage))
     ;; The concat demuxer needs the final image repeated to honor its duration.
-    (format stream "file '~A'~%" (first (car (last *explainer-stages*))))) )
+    (format stream "file '~A'~%" (first (car (last (%explainer-stages))))) ))
 
 (defun %write-explainer-readme (directory marker-x marker-y seconds-per-stage)
   (declare (ignore marker-x marker-y))
@@ -512,11 +563,11 @@ than becoming a separate illustrative scene."
     (format stream "GPU Raytracer explainer storyboard~%~%")
     (format stream "The diagrams show the actual GPU launch structure and one representative pixel. ~%")
     (format stream "Each stage is displayed for ~D seconds.\n\n" seconds-per-stage)
-    (dolist (stage *explainer-stages*)
+    (dolist (stage (%explainer-stages))
       (format stream "~A: ~A~%" (first stage) (second stage)))))
 
 (defun run-gpu-explainer (&key (res 8) (directory "gpu-explainer")
-                                (seconds-per-stage 10))
+                                (seconds-per-stage 10) (language :ja))
   "Render a still scene and save numbered explanatory stages plus video metadata.
 
 RUN.SH's MODE=explainer consumes storyboard.ffconcat and explanation.srt to
@@ -524,22 +575,24 @@ produce an MP4.  The yellow marker is intentionally added only to these
 educational copies, never to the production render."
   (unless (plusp seconds-per-stage)
     (error "SECONDS-PER-STAGE must be positive, got ~S." seconds-per-stage))
-  (let* ((width (* res 100))
-         (height (* res 100))
-         ;; The exact center looks at the floor in this scene.  This point
-         ;; deliberately lands on a large foreground sphere, making the
-         ;; primary-ray and reflection explanations visually meaningful.
-         (marker-x (floor (* width 0.45f0)))
-         (marker-y (floor (* height 0.275f0)))
-         (final-path (%explainer-path directory "final-unannotated.ppm")))
-    (ensure-directories-exist final-path)
-    (run-gpu-raytracer :res res :output-file final-path
-                        :write-debug-images t
-                        :explain-directory directory
-                        :explain-pixel-x marker-x
-                        :explain-pixel-y marker-y
-                        :progressive-directory directory
-                        :progressive-bands 5)
-    (%write-explainer-subtitles directory seconds-per-stage)
-    (%write-explainer-readme directory marker-x marker-y seconds-per-stage)
-    (format t "Explainer storyboard written to ~A~%" (%explainer-directory directory))))
+  (let ((*explainer-language* (%normalize-explainer-language language)))
+    (let* ((width (* res 100))
+           (height (* res 100))
+           ;; The exact center looks at the floor in this scene.  This point
+           ;; deliberately lands on a large foreground sphere, making the
+           ;; primary-ray and reflection explanations visually meaningful.
+           (marker-x (floor (* width 0.45f0)))
+           (marker-y (floor (* height 0.275f0)))
+           (final-path (%explainer-path directory "final-unannotated.ppm")))
+      (ensure-directories-exist final-path)
+      (run-gpu-raytracer :res res :output-file final-path
+                          :write-debug-images t
+                          :explain-directory directory
+                          :explain-pixel-x marker-x
+                          :explain-pixel-y marker-y
+                          :progressive-directory directory
+                          :progressive-bands 5)
+      (%write-explainer-subtitles directory seconds-per-stage)
+      (%write-explainer-readme directory marker-x marker-y seconds-per-stage)
+      (format t "Explainer storyboard written to ~A (~A)~%"
+              (%explainer-directory directory) *explainer-language*))))

@@ -1,5 +1,26 @@
 # Lisp Raytracer
 
+## CPU版とGPU版
+
+CPU版は `CPU/` にあり、Common Lispだけで画素を順番に計算します。CUDA対応GPUは不要で、
+レンダリングの基礎実装と結果確認に使えます。
+
+GPU版は `GPU/` にあり、Lispがシーン情報を用意してGPUへ送り、GPUカーネルが多数の画素を
+並列に計算します。GPU版の実行にはCUDA対応GPUが必要です。通常動画と解説動画はいずれも
+`GPU/run.sh` から作成します。
+
+### CPU版の動画
+
+CPU版は60枚のPPMフレームを出力します。CPUディレクトリで実行してください。
+
+```bash
+cd CPU
+sbcl --script render_cpu.lsp
+ffmpeg -framerate 30 -i spheres_frame_%03d.ppm -c:v libx264 -pix_fmt yuv420p spheres_cpu_animation.mp4
+```
+
+出力: `CPU/spheres_cpu_animation.mp4`
+
 ## GPU explainer video
 
 Google Colabなど、CUDA対応GPUのある環境でリポジトリのルートから実行します。

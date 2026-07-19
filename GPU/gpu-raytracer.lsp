@@ -417,13 +417,17 @@
 
 ;; GPU Raytracer Kernel definition utilizing code templates to expand exactly 3 recursion levels.
 (eval
-  `(defkernel raytrace-kernel-v11 (void ((out-r float*) (out-g float*) (out-b float*)
+  `(defkernel raytrace-kernel-v12 (void ((out-r float*) (out-g float*) (out-b float*)
                                     (out-shadow float*)
                                     ;; Primary shading before any recursive reflection.
                                     (out-direct-r float*) (out-direct-g float*) (out-direct-b float*)
                                     ;; Primary shading plus the first reflected hit only.
                                     (out-one-bounce-r float*) (out-one-bounce-g float*) (out-one-bounce-b float*)
+                                    ;; Instrumentation: order in which threads finish final RGB writes.
+                                    (out-completion-rank int*) (completion-counter int*) (record-completion int)
                                     (width int) (height int)
+                                    ;; Kept at zero in the production and explainer launches.
+                                    (block-base-x int) (block-base-y int)
                                     (width-f cl-cuda:float) (height-f cl-cuda:float)
                                     (sphere-cx float*) (sphere-cy float*) (sphere-cz float*)
                                     (sphere-r float*)
@@ -436,8 +440,8 @@
                                     (u-x cl-cuda:float) (u-y cl-cuda:float) (u-z cl-cuda:float)
                                     (scale cl-cuda:float)
                                     (sky-yr-min cl-cuda:float) (sky-yr-max cl-cuda:float)))
-     (let* ((ix (+ (* cl-cuda:block-idx-x cl-cuda:block-dim-x) cl-cuda:thread-idx-x))
-            (iy (+ (* cl-cuda:block-idx-y cl-cuda:block-dim-y) cl-cuda:thread-idx-y)))
+     (let* ((ix (+ (* (+ block-base-x cl-cuda:block-idx-x) cl-cuda:block-dim-x) cl-cuda:thread-idx-x))
+            (iy (+ (* (+ block-base-y cl-cuda:block-idx-y) cl-cuda:block-dim-y) cl-cuda:thread-idx-y)))
        (if (< ix width)
            (if (< iy height)
                (let* ((pixel-idx (+ (* iy width) ix))
@@ -651,7 +655,10 @@
               (set (aref out-direct-b pixel-idx) direct-b)
               (set (aref out-one-bounce-r pixel-idx) one-bounce-r)
               (set (aref out-one-bounce-g pixel-idx) one-bounce-g)
-              (set (aref out-one-bounce-b pixel-idx) one-bounce-b))))))))
+              (set (aref out-one-bounce-b pixel-idx) one-bounce-b)
+              (if (= record-completion 1)
+                  (set (aref out-completion-rank pixel-idx)
+                       (atomic-add (pointer (aref completion-counter 0)) 1))))))))))
 
 ;; This kernel deliberately does not participate in rendering.  It traces only
 ;; the first reflection ray so that its result can be inspected without
@@ -766,9 +773,18 @@
                  (set (aref out-self-hit pixel-idx) self-hit))))))))
 
 ;; Host side orchestration code
+(declaim (ftype function write-explainer-ray-diagram write-explainer-stage-images
+                          write-ppm write-ppm-completion-replay
+                          verify-completion-log write-completion-log-report))
+
 (defun run-gpu-raytracer (&key (res 8) (output-file "spheres_gpu.ppm")
                                frame
-                               (write-debug-images t))
+                               (write-debug-images t)
+                               explain-directory
+                               explain-pixel-x
+                               explain-pixel-y
+                               progressive-directory
+                               (progressive-bands 5))
   (let* ((width (* res 100))
          (height (* res 100))
          (size (* width height))
@@ -925,6 +941,13 @@
            (list -80.0f0 -150.0f0 -1200.0f0 200.0f0 0.2f0 0.8f0 0.2f0 0.2f0)
             (list 0.0f0 -300.0f0 -1200.0f0 200.0f0 0.8f0 0.2f0 0.2f0 0.02f0)))
     |#
+    (when explain-directory
+      (write-explainer-ray-diagram
+       explain-directory
+       (or explain-pixel-x (floor width 2))
+       (or explain-pixel-y (floor height 2))
+       width height
+       eye-x eye-y eye-z fx fy fz rx ry rz ux uy uz scale sphere-data))
      
      (let* ((num-spheres (length sphere-data))
            (block-x 16)
@@ -945,6 +968,8 @@
                              (out-one-bounce-r 'cl-cuda:float size)
                              (out-one-bounce-g 'cl-cuda:float size)
                              (out-one-bounce-b 'cl-cuda:float size)
+                             (out-completion-rank 'cl-cuda:int size)
+                             (completion-counter 'cl-cuda:int 1)
                              ;; Reflection-path diagnostics: geometry, child
                              ;; shading, and the depth-0 reflected term.
                              (out-reflect-path-r 'cl-cuda:float size)
@@ -1005,26 +1030,32 @@
           
           ;; Bump the kernel symbol whenever the generated program changes so
           ;; cl-cuda cannot reuse a module compiled for an older definition.
-          (format t "Launching CUDA kernel v11 (Grid: ~Ax~A, Block: ~Ax~A)...~%" grid-x grid-y block-x block-y)
+          (setf (memory-block-aref completion-counter 0) 0)
+          (sync-memory-block completion-counter :host-to-device)
+          (format t "Launching CUDA kernel v12 (Grid: ~Ax~A, Block: ~Ax~A)...~%" grid-x grid-y block-x block-y)
           (let ((start-time (get-internal-real-time)))
-            (raytrace-kernel-v11 out-r out-g out-b out-shadow
-                             out-direct-r out-direct-g out-direct-b
-                             out-one-bounce-r out-one-bounce-g out-one-bounce-b
-                             width height
-                             width-f height-f
-                             sph-cx sph-cy sph-cz
-                             sph-r
-                             sph-col-r sph-col-g sph-col-b
-                             sph-refl sph-ior
-                             num-spheres
-                             eye-x eye-y eye-z
-                             fx fy fz
-                             rx ry rz
-                             ux uy uz
-                             scale
-                             sky-yr-min sky-yr-max
-                             :grid-dim (list grid-x grid-y 1)
-                             :block-dim (list block-x block-y 1))
+            (flet ((launch-main (launch-grid-y block-base-y)
+                     (raytrace-kernel-v12 out-r out-g out-b out-shadow
+                                           out-direct-r out-direct-g out-direct-b
+                                           out-one-bounce-r out-one-bounce-g out-one-bounce-b
+                                           out-completion-rank completion-counter
+                                           (if progressive-directory 1 0)
+                                           width height 0 block-base-y
+                                           width-f height-f
+                                           sph-cx sph-cy sph-cz
+                                           sph-r
+                                           sph-col-r sph-col-g sph-col-b
+                                           sph-refl sph-ior
+                                           num-spheres
+                                           eye-x eye-y eye-z
+                                           fx fy fz
+                                           rx ry rz
+                                           ux uy uz
+                                           scale
+                                           sky-yr-min sky-yr-max
+                                           :grid-dim (list grid-x launch-grid-y 1)
+                                           :block-dim (list block-x block-y 1))))
+              (launch-main grid-y 0))
 
             ;; This diagnostic follows the same first reflection ray but
             ;; exposes its geometry and child shading separately.  It does
@@ -1055,6 +1086,10 @@
             (sync-memory-block out-one-bounce-r :device-to-host)
             (sync-memory-block out-one-bounce-g :device-to-host)
             (sync-memory-block out-one-bounce-b :device-to-host)
+            (when progressive-directory
+              (sync-memory-block out-completion-rank :device-to-host)
+              (sync-memory-block completion-counter :device-to-host)
+              (verify-completion-log out-completion-rank completion-counter size))
             (when write-debug-images
               (sync-memory-block out-reflect-path-r :device-to-host)
               (sync-memory-block out-reflect-path-g :device-to-host)
@@ -1071,6 +1106,28 @@
               (format t "GPU Raytracing completed in ~,4F seconds.~%" elapsed)))
           
           (write-ppm output-file width height size out-r out-g out-b)
+          (when progressive-directory
+            (unless (plusp progressive-bands)
+              (error "PROGRESSIVE-BANDS must be positive, got ~S" progressive-bands))
+            ;; Replay the ordering measured inside this one kernel launch.
+            ;; No additional raytracing launches occur here.
+            ;; For the five-stage explainer, preserve the first instants of
+            ;; actual completion (1% and 5%) instead of jumping straight to
+            ;; an evenly spaced 20% reveal.
+            (let ((completion-percentages
+                    (if (= progressive-bands 5)
+                        '(1 5 20 55 100)
+                        (loop for frame from 1 to progressive-bands
+                              collect (ceiling (* 100 frame) progressive-bands)))))
+              (write-completion-log-report progressive-directory size
+                                           completion-percentages)
+              (loop for frame from 1 to progressive-bands
+                    for percentage in completion-percentages
+                  do (write-ppm-completion-replay
+                      (format nil "~A/12-progress-~2,'0D.ppm"
+                              (string-right-trim '(#\/) progressive-directory) frame)
+                      width height size out-r out-g out-b out-completion-rank
+                      (ceiling (* percentage size) 100)))))
           (when write-debug-images
             (write-ppm "spheres_gpu_shadow-factor-debug.ppm" width height size
                        out-shadow out-shadow out-shadow)
@@ -1089,6 +1146,14 @@
                        out-reflect-contrib-r out-reflect-contrib-g out-reflect-contrib-b)
             (write-ppm "spheres_gpu_reflection-self-hit-debug.ppm" width height size
                        out-reflect-self-hit out-reflect-self-hit out-reflect-self-hit))
+          (when explain-directory
+            (write-explainer-stage-images
+             explain-directory width height size
+             (or explain-pixel-x (floor width 2))
+             (or explain-pixel-y (floor height 2))
+             out-r out-g out-b
+             out-direct-r out-direct-g out-direct-b
+             out-one-bounce-r out-one-bounce-g out-one-bounce-b))
           (format t "Rendering Job Successful!~%"))))))
 
 (defun run-gpu-animation (&key (frames 300) (res 8)

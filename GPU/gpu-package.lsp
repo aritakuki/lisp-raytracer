@@ -11,7 +11,11 @@
                 :with-memory-blocks
                 :memory-block-aref
                 :sync-memory-block
+                ;; CUDA-language built-ins used inside DEFKERNEL bodies.
+                :atomic-add
+                :pointer
                 :void :float* :int* :int)
   (:export :run-gpu-raytracer
            :run-gpu-animation
+           :run-gpu-explainer
            :verify-kernel-structure))

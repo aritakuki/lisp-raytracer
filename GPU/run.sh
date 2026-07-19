@@ -12,9 +12,20 @@ FRAMES="${FRAMES:-300}"
 FPS="${FPS:-60}"
 FRAME_DIR="${FRAME_DIR:-frames_gpu}"
 OUTPUT_VIDEO="${OUTPUT_VIDEO:-spheres_gpu_animation.mp4}"
-EXPLAIN_DIR="${EXPLAIN_DIR:-gpu-explainer}"
+EXPLAIN_LANGUAGE="${EXPLAIN_LANGUAGE:-ja}"
 EXPLAIN_SECONDS="${EXPLAIN_SECONDS:-10}"
-EXPLAIN_VIDEO="${EXPLAIN_VIDEO:-gpu-raytracing-explainer.mp4}"
+
+case "$EXPLAIN_LANGUAGE" in
+    ja)
+        EXPLAIN_DIR="${EXPLAIN_DIR:-gpu-explainer}"
+        EXPLAIN_VIDEO="${EXPLAIN_VIDEO:-gpu-raytracing-explainer.mp4}"
+        ;;
+    en)
+        EXPLAIN_DIR="${EXPLAIN_DIR:-gpu-explainer-en}"
+        EXPLAIN_VIDEO="${EXPLAIN_VIDEO:-gpu-raytracing-explainer-en.mp4}"
+        ;;
+    *) echo "EXPLAIN_LANGUAGE must be ja or en, got: $EXPLAIN_LANGUAGE" >&2; exit 2 ;;
+esac
 
 case "$MODE" in
     animation|still|explainer) ;;
@@ -62,11 +73,11 @@ if [ "$MODE" != "still" ] && ! command -v ffmpeg >/dev/null 2>&1; then
     sudo apt-get install -y ffmpeg
 fi
 
-# FFmpeg's subtitle renderer needs a Japanese-capable font for the explainer.
+# FFmpeg's subtitle renderer needs a font that supports Japanese and English.
 # Google Colab images do not consistently include one by default.
 if [ "$MODE" = "explainer" ]; then
     if ! command -v fc-list >/dev/null 2>&1 || ! fc-list : family | grep -qi 'Noto Sans CJK'; then
-        echo "=== Installing Japanese subtitle font ==="
+        echo "=== Installing subtitle font ==="
         sudo apt-get update
         sudo apt-get install -y fonts-noto-cjk
     fi
@@ -114,7 +125,7 @@ else
         --load "$HOME/quicklisp/setup.lisp" \
         --load gpu-main.lsp \
         --eval "(setf cl-cuda.api.nvcc:*tmp-path* \"$SCRIPT_DIR/generated-cuda/\")" \
-        --eval "(gpu-raytracer:run-gpu-explainer :res $RES :directory \"$EXPLAIN_DIR\" :seconds-per-stage $EXPLAIN_SECONDS)"
+        --eval "(gpu-raytracer:run-gpu-explainer :res $RES :directory \"$EXPLAIN_DIR\" :seconds-per-stage $EXPLAIN_SECONDS :language :$EXPLAIN_LANGUAGE)"
 
     # Convert the explanatory diagrams to numbered PPM stages so the video
     # encoder can use one image format throughout.

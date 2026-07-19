@@ -7,7 +7,45 @@
 (declaim (ftype function write-ppm write-ppm-with-pixel-marker
                           run-gpu-raytracer))
 
-(defparameter *explainer-stages*
+(defparameter *explainer-stages-en*
+  '(("00-title.ppm" "A Hobby Ray Tracer in Common Lisp and GPU")
+    ("01-intro.ppm" "What Is a Ray Tracer?")
+    ("02-scene.ppm" "Lisp places the camera, light, sky, floor, and spheres.
+It sends their data to the GPU as arrays.")
+    ("03-ray-direction.ppm" "Light travels in all directions.
+Orange shows one L→H→C path; the GPU traces it backward.")
+    ("04-pixel.ppm" "The GPU's finished image has one color per pixel.
+The yellow box marks the pixel whose color we trace.")
+    ("05-primary-ray.ppm" "A primary ray starts at the camera to find one pixel's color.
+It first hits H, where color calculation begins.")
+    ("06-shadow-ray.ppm" "A shadow ray checks whether light travels from H to the light.
+If blocked, light cannot reach H, creating a shadow.")
+    ("07-local-shading.ppm" "Direct lighting is brightness reaching H from the light.
+It combines with material color, surface direction, and shadow.")
+    ("08-reflection-ray.ppm" "A reflection ray leaves H to inspect the reflected scene.
+Its returned color helps determine the pixel's final RGB value.")
+    ("09-grid.ppm" "The program groups 16×16 pixels into one block.
+It gives the GPU work one block at a time.")
+    ("10-thread-flow.ppm" "Each pixel in a block is assigned to a worker called a thread.
+One thread calculates one pixel from its first ray to final RGB.")
+    ("11-scheduling.ppm" "An 800×800 image becomes 2,500 blocks of 16×16 pixels.
+An SM runs the threads belonging to one block.")
+    ("12-progress-01.ppm" "The GPU now calculates Lisp's sky, spheres, floor, and light.
+At the start, only a few pixels have final colors.")
+    ("12-progress-02.ppm" "Finished pixels reveal Lisp's sky, sphere, and floor colors.
+Where a shadow ray finds blocked light, the material is darker.")
+    ("12-progress-03.ppm" "Primary rays find surfaces; shadow rays test blocked light.
+Reflective spheres add color and light from reflection rays.")
+    ("12-progress-04.ppm" "As pixels finish, sky, spheres, floor, and shadows take shape.
+Colors and positions come from Lisp's scene and light.")
+    ("12-progress-05.ppm" "All pixels are complete: Lisp's full scene is now an image.
+Final RGB is copied from GPU to CPU for saving.")
+    ("14-transfer.ppm" "PPM (Portable Pixmap) stores each pixel as RGB numbers.
+The CPU saves the final RGB array copied from the GPU.")
+    ("15-final.ppm" "This finished image has final RGB values for every pixel.
+One GPU kernel launch produced it and it was saved as a file.")))
+
+(defparameter *explainer-stages-ja*
   '(("00-title.ppm" "Common Lisp と GPUで学ぶ 趣味のレイトレーシング")
     ("01-intro.ppm" "レイトレーサーとは")
     ("02-scene.ppm" "まず、Lisp（CPU側）がシミュレーション空間にカメラ・光源・空・床・球を配置します。
@@ -45,6 +83,18 @@ SM（Streaming Multiprocessor）は、ブロックのスレッドを実行する
     ("15-final.ppm" "全画素の最終RGB値がそろった完成画像です。
 1回のGPUカーネル実行で計算した結果を、画像ファイルに保存しました。")))
 
+(defparameter *explainer-language* :ja)
+
+(defun %normalize-explainer-language (language)
+  (ecase language
+    (:ja :ja)
+    (:en :en)))
+
+(defun %explainer-stages ()
+  (ecase *explainer-language*
+    (:ja *explainer-stages-ja*)
+    (:en *explainer-stages-en*)))
+
 (defun %explainer-directory (directory)
   (make-pathname :name nil :type nil
                  :defaults (pathname (concatenate 'string
@@ -53,6 +103,57 @@ SM（Streaming Multiprocessor）は、ブロックのスレッドを実行する
 
 (defun %explainer-path (directory filename)
   (merge-pathnames filename (%explainer-directory directory)))
+
+(defun %replace-all (text old new)
+  (with-output-to-string (out)
+    (loop with start = 0
+          for hit = (search old text :start2 start)
+          do (if hit
+                 (progn (write-string text out :start start :end hit)
+                        (write-string new out)
+                        (setf start (+ hit (length old))))
+                 (progn (write-string text out :start start) (return))))))
+
+(defun localize-explainer-svgs (directory)
+  "Translate all visible diagram labels for this English-only branch."
+  (let ((replacements
+          '(("レイトレーサーは、カメラに入る光の経路を逆向きに追跡し、" . "A ray tracer follows the path of light entering the camera backward.")
+            ("物体・光・反射を計算して3D画像を作ります。" . "It calculates objects, light, and reflections to make a 3D image.")
+            ("レイ（光線）をトレース（追跡）する者。だから、レイトレーサーです。" . "It traces rays of light — that is why it is a ray tracer.")
+            ("今回は、Common Lispが設定した情報をもとに、GPUが画素を並列に計算します。" . "Here, a GPU calculates pixels in parallel from data set by Common Lisp.")
+            ("空・球・床" . "Sky, spheres, floor") ("空・床" . "Sky and floor")
+            ("実際の配置（上から）" . "Actual layout")
+            ("同じ実座標を拡大（上から）" . "Same coordinates, zoomed in (top view)")
+            ("当たり点" . "Hit point") ("光は全方向へ広がる" . "Light spreads in all directions")
+            ("最初に出すレイ（主レイ）" . "Primary ray")
+            ("光が届くか調べるレイ（影レイ）" . "Shadow ray")
+            ("直接照明：光源からHへ届く明るさ" . "Direct light")
+            ("反射した先を調べるレイ（反射レイ）" . "Reflection ray")
+            ("1ブロック：16 × 16画素" . "One block: 16 × 16 pixels")
+            ("この橙の四角が1ブロック" . "This orange square is one block")
+            ;; The arrow itself shows the full left-hand block maps to the
+            ;; highlighted orange block, so no label is needed on the arrow.
+            ("この全体が" . "")
+            ("完成画像の1画素" . "One pixel in the final image")
+            ("1 スレッド" . "One thread") ("主レイ" . "Primary ray") ("影レイ" . "Shadow ray")
+            ("全画素の最終RGB配列" . "Final RGB array for all pixels")
+            ("最終RGB" . "Final RGB") ("GPUメモリ" . "GPU memory")
+            ("カーネル完了後に、完成済みバッファをCPUへコピー" . "After the kernel finishes, copy the completed buffer to the CPU")
+            ("PPM（Portable Pixmap）" . "PPM (Portable Pixmap)")
+            ("各画素の R / G / B の数値" . "RGB numbers for each pixel")
+            ("→ 画像ファイルとして保存" . "→ Save as an image file")
+            ("device → host コピー" . "device → host copy")
+            ;; Keep the generic terms last so they do not break longer labels.
+            ("カメラ" . "Camera") ("光源" . "Light") ("レイ" . "Ray"))))
+    (dolist (filename '("intro.svg" "scene.svg" "ray-direction.svg" "primary-ray.svg"
+                        "shadow-ray.svg" "local-shading.svg" "reflection-ray.svg"
+                        "grid.svg" "thread-flow.svg" "scheduling.svg" "transfer.svg"))
+      (let ((path (%explainer-path directory filename)))
+        (when (probe-file path)
+          (let ((text (uiop:read-file-string path)))
+            (dolist (pair replacements) (setf text (%replace-all text (car pair) (cdr pair))))
+            (with-open-file (out path :direction :output :if-exists :supersede)
+              (write-string text out))))))))
 
 (defun %ray-sphere-hit (ox oy oz dx dy dz sphere)
   (let* ((cx (first sphere)) (cy (second sphere)) (cz (third sphere))
@@ -209,7 +310,7 @@ than becoming a separate illustrative scene."
              (write-intro (filename)
                (with-open-file (stream (%explainer-path directory filename) :direction :output :if-exists :supersede)
                  (svg-header stream "レイトレーサーとは")
-                 (format stream "<g fill=\"#ffffff\" font-size=\"30\"><text x=\"110\" y=\"100\">レイトレーサーは、カメラに入る光の経路を逆向きに追跡し、</text><text x=\"110\" y=\"145\">物体・光・反射を計算して3D画像を作ります。</text></g><text x=\"110\" y=\"210\" fill=\"#ffcf70\" font-size=\"32\">レイ（光線）をトレース（追跡）する者。だから、レイトレーサーです。</text><text x=\"110\" y=\"270\" fill=\"#a7f3b1\" font-size=\"27\">今回は、Common Lispが設定した情報をもとに、GPUが画素を並列に計算します。</text><g fill=\"#1b2c3d\" stroke=\"#52b7ff\" stroke-width=\"4\"><rect x=\"110\" y=\"320\" width=\"180\" height=\"105\" rx=\"18\"/><rect x=\"490\" y=\"320\" width=\"260\" height=\"105\" rx=\"18\"/><rect x=\"950\" y=\"320\" width=\"180\" height=\"105\" rx=\"18\"/></g><circle cx=\"165\" cy=\"372\" r=\"23\" fill=\"#e8eef6\"/><text x=\"205\" y=\"382\" fill=\"white\" font-size=\"26\">カメラ</text><path d=\"M305,372 H470\" stroke=\"#52b7ff\" stroke-width=\"5\" fill=\"none\" marker-end=\"url(#arrow-blue)\"/><text x=\"350\" y=\"350\" fill=\"#8ed0ff\" font-size=\"24\">レイ</text><circle cx=\"565\" cy=\"372\" r=\"35\" fill=\"#32cd32\"/><path d=\"M600,410 H720\" stroke=\"#8a96a3\" stroke-width=\"10\"/><text x=\"610\" y=\"350\" fill=\"white\" font-size=\"24\">空・球・床</text><path d=\"M765,372 H930\" stroke=\"#ff9f1c\" stroke-width=\"5\" fill=\"none\" marker-end=\"url(#arrow-orange)\"/><text x=\"990\" y=\"382\" fill=\"#a7f3b1\" font-size=\"30\">RGB</text><g><rect x=\"980\" y=\"395\" width=\"38\" height=\"24\" fill=\"#f55\"/><rect x=\"1023\" y=\"395\" width=\"38\" height=\"24\" fill=\"#5f5\"/><rect x=\"1066\" y=\"395\" width=\"38\" height=\"24\" fill=\"#55f\"/></g></g></svg>~%")))
+                 (format stream "<g fill=\"#ffffff\" font-size=\"30\"><text x=\"110\" y=\"100\">レイトレーサーは、カメラに入る光の経路を逆向きに追跡し、</text><text x=\"110\" y=\"145\">物体・光・反射を計算して3D画像を作ります。</text></g><text x=\"110\" y=\"210\" fill=\"#ffcf70\" font-size=\"32\">レイ（光線）をトレース（追跡）する者。だから、レイトレーサーです。</text><text x=\"110\" y=\"270\" fill=\"#a7f3b1\" font-size=\"27\">今回は、Common Lispが設定した情報をもとに、GPUが画素を並列に計算します。</text><g fill=\"#1b2c3d\" stroke=\"#52b7ff\" stroke-width=\"4\"><rect x=\"110\" y=\"320\" width=\"180\" height=\"105\" rx=\"18\"/><rect x=\"490\" y=\"320\" width=\"260\" height=\"105\" rx=\"18\"/><rect x=\"950\" y=\"320\" width=\"180\" height=\"105\" rx=\"18\"/></g><circle cx=\"165\" cy=\"372\" r=\"23\" fill=\"#e8eef6\"/><text x=\"195\" y=\"382\" fill=\"white\" font-size=\"24\">カメラ</text><path d=\"M305,372 H470\" stroke=\"#52b7ff\" stroke-width=\"5\" fill=\"none\" marker-end=\"url(#arrow-blue)\"/><text x=\"350\" y=\"350\" fill=\"#8ed0ff\" font-size=\"24\">レイ</text><circle cx=\"565\" cy=\"372\" r=\"35\" fill=\"#32cd32\"/><path d=\"M600,410 H720\" stroke=\"#8a96a3\" stroke-width=\"10\"/><text x=\"530\" y=\"350\" fill=\"white\" font-size=\"22\">空・球・床</text><path d=\"M765,372 H930\" stroke=\"#ff9f1c\" stroke-width=\"5\" fill=\"none\" marker-end=\"url(#arrow-orange)\"/><text x=\"990\" y=\"382\" fill=\"#a7f3b1\" font-size=\"30\">RGB</text><g><rect x=\"980\" y=\"395\" width=\"38\" height=\"24\" fill=\"#f55\"/><rect x=\"1023\" y=\"395\" width=\"38\" height=\"24\" fill=\"#5f5\"/><rect x=\"1066\" y=\"395\" width=\"38\" height=\"24\" fill=\"#55f\"/></g></g></svg>~%")))
              (zoom-x (x) (+ zoom-origin-x (* (- x zoom-min-x) zoom-scale)))
              (zoom-y (z) (+ 145.0f0 (* (- zoom-max-z z) zoom-scale)))
              (write-world (filename title mode)
@@ -346,7 +447,7 @@ than becoming a separate illustrative scene."
                     ;; on the selected orange block rather than behind it.
                     (format stream "<path d=\"M600,260 H800\" stroke=\"#ff9f1c\" stroke-width=\"6\" fill=\"none\" marker-end=\"url(#arrow-orange)\"/><text x=\"610\" y=\"235\" fill=\"#ffcf70\" font-size=\"20\">この全体が</text>~%"))
                    (:thread-flow
-                    (format stream "<text x=\"70\" y=\"105\" fill=\"#8ed0ff\" font-size=\"26\">完成画像の1画素</text><rect x=\"75\" y=\"140\" width=\"190\" height=\"190\" fill=\"#1b2c3d\" stroke=\"#52b7ff\" stroke-width=\"4\"/><g stroke=\"#789\" stroke-width=\"2\"><path d=\"M122,140 V330 M170,140 V330 M218,140 V330 M75,187 H265 M75,235 H265 M75,282 H265\"/></g><rect x=\"170\" y=\"235\" width=\"48\" height=\"47\" fill=\"#52b7ff\"/><path d=\"M290,235 H365\" stroke=\"#ff9f1c\" stroke-width=\"5\" fill=\"none\" marker-end=\"url(#arrow-orange)\"/><rect x=\"390\" y=\"145\" width=\"270\" height=\"180\" rx=\"18\" fill=\"#1b2c3d\" stroke=\"#ff9f1c\" stroke-width=\"4\"/><text x=\"475\" y=\"190\" fill=\"#ffcf70\" font-size=\"30\">1 スレッド</text><path d=\"M435,230 H505 H575\" stroke=\"#52b7ff\" stroke-width=\"5\" fill=\"none\" marker-end=\"url(#arrow-blue)\"/><text x=\"420\" y=\"275\" fill=\"#8ed0ff\" font-size=\"22\">主レイ</text><path d=\"M575,230 H625\" stroke=\"#7ee787\" stroke-width=\"4\" fill=\"none\" stroke-dasharray=\"9 6\" marker-end=\"url(#arrow-green)\"/><text x=\"565\" y=\"275\" fill=\"#a7f3b1\" font-size=\"22\">影レイ</text><path d=\"M685,235 H780\" stroke=\"#ff9f1c\" stroke-width=\"5\" fill=\"none\" marker-end=\"url(#arrow-orange)\"/><rect x=\"820\" y=\"170\" width=\"210\" height=\"130\" rx=\"16\" fill=\"#1b2c3d\" stroke=\"#7ee787\" stroke-width=\"4\"/><text x=\"872\" y=\"225\" fill=\"#a7f3b1\" font-size=\"30\">最終RGB</text><g><rect x=\"865\" y=\"245\" width=\"42\" height=\"24\" fill=\"#f55\"/><rect x=\"912\" y=\"245\" width=\"42\" height=\"24\" fill=\"#5f5\"/><rect x=\"959\" y=\"245\" width=\"42\" height=\"24\" fill=\"#55f\"/></g>~%"))
+                    (format stream "<text x=\"70\" y=\"105\" fill=\"#8ed0ff\" font-size=\"26\">完成画像の1画素</text><rect x=\"75\" y=\"140\" width=\"190\" height=\"190\" fill=\"#1b2c3d\" stroke=\"#52b7ff\" stroke-width=\"4\"/><g stroke=\"#789\" stroke-width=\"2\"><path d=\"M122,140 V330 M170,140 V330 M218,140 V330 M75,187 H265 M75,235 H265 M75,282 H265\"/></g><rect x=\"170\" y=\"235\" width=\"48\" height=\"47\" fill=\"#52b7ff\"/><path d=\"M290,235 H365\" stroke=\"#ff9f1c\" stroke-width=\"5\" fill=\"none\" marker-end=\"url(#arrow-orange)\"/><rect x=\"390\" y=\"145\" width=\"270\" height=\"180\" rx=\"18\" fill=\"#1b2c3d\" stroke=\"#ff9f1c\" stroke-width=\"4\"/><text x=\"475\" y=\"190\" fill=\"#ffcf70\" font-size=\"30\">1 スレッド</text><path d=\"M435,230 H505 H575\" stroke=\"#52b7ff\" stroke-width=\"5\" fill=\"none\" marker-end=\"url(#arrow-blue)\"/><text x=\"410\" y=\"275\" fill=\"#8ed0ff\" font-size=\"18\">主レイ</text><path d=\"M575,230 H625\" stroke=\"#7ee787\" stroke-width=\"4\" fill=\"none\" stroke-dasharray=\"9 6\" marker-end=\"url(#arrow-green)\"/><text x=\"535\" y=\"275\" fill=\"#a7f3b1\" font-size=\"18\">影レイ</text><path d=\"M685,235 H780\" stroke=\"#ff9f1c\" stroke-width=\"5\" fill=\"none\" marker-end=\"url(#arrow-orange)\"/><rect x=\"820\" y=\"170\" width=\"210\" height=\"130\" rx=\"16\" fill=\"#1b2c3d\" stroke=\"#7ee787\" stroke-width=\"4\"/><text x=\"872\" y=\"225\" fill=\"#a7f3b1\" font-size=\"30\">最終RGB</text><g><rect x=\"865\" y=\"245\" width=\"42\" height=\"24\" fill=\"#f55\"/><rect x=\"912\" y=\"245\" width=\"42\" height=\"24\" fill=\"#5f5\"/><rect x=\"959\" y=\"245\" width=\"42\" height=\"24\" fill=\"#55f\"/></g>~%"))
                    (:scheduling
                     ;; Keep the scheduling diagram visual.  The subtitle
                     ;; introduces the terms, so labels cannot overflow boxes.
@@ -364,7 +465,9 @@ than becoming a separate illustrative scene."
         (write-runtime-diagram "grid.svg" "ブロック" :grid)
         (write-runtime-diagram "thread-flow.svg" "スレッド" :thread-flow)
         (write-runtime-diagram "scheduling.svg" "実行" :scheduling)
-        (write-runtime-diagram "transfer.svg" "転送" :transfer)))))
+        (write-runtime-diagram "transfer.svg" "転送" :transfer)
+        (when (eq *explainer-language* :en)
+          (localize-explainer-svgs directory))))))
 
 (defun write-explainer-stage-images
     (directory width height size marker-x marker-y
@@ -398,19 +501,19 @@ than becoming a separate illustrative scene."
 
 (defun %validate-explainer-captions ()
   "Reject captions that would create accidental or unreadable subtitle breaks."
-  (dolist (stage *explainer-stages*)
+  (dolist (stage (%explainer-stages))
     (let ((caption (second stage))
           (line-length 0)
           (line-count 1))
       (loop for character across caption
             do (if (char= character #\Newline)
                    (progn
-                     (when (or (zerop line-length) (> line-length 52))
+                     (when (or (zerop line-length) (> line-length 64))
                        (error "Invalid subtitle line in ~A: ~S" (first stage) caption))
                      (setf line-length 0)
                      (incf line-count))
                    (incf line-length)))
-      (when (or (> line-count 2) (zerop line-length) (> line-length 52))
+      (when (or (> line-count 2) (zerop line-length) (> line-length 64))
         (error "Subtitle must contain one or two short lines in ~A: ~S"
                (first stage) caption))
       ;; These patterns indicate a term was split in the middle, rather than
@@ -423,7 +526,7 @@ than becoming a separate illustrative scene."
   (%validate-explainer-captions)
   (with-open-file (stream (%explainer-path directory "explanation.srt")
                           :direction :output :if-exists :supersede)
-    (loop for (filename caption) in *explainer-stages*
+    (loop for (filename caption) in (%explainer-stages)
           for index from 1
           for start = (* (1- index) seconds-per-stage)
           for end = (* index seconds-per-stage)
@@ -438,7 +541,7 @@ than becoming a separate illustrative scene."
     (format stream "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding~%")
     (format stream "Style: Default,Noto Sans CJK JP,30,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,0,8,120,120,36,1~%~%")
     (format stream "[Events]~%Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text~%")
-    (loop for (filename caption) in *explainer-stages*
+    (loop for (filename caption) in (%explainer-stages)
           for index from 1
           for start = (* (1- index) seconds-per-stage)
           for end = (* index seconds-per-stage)
@@ -448,10 +551,10 @@ than becoming a separate illustrative scene."
   (with-open-file (stream (%explainer-path directory "storyboard.ffconcat")
                           :direction :output :if-exists :supersede)
     (format stream "ffconcat version 1.0~%")
-    (dolist (stage *explainer-stages*)
+    (dolist (stage (%explainer-stages))
       (format stream "file '~A'~%duration ~D~%" (first stage) seconds-per-stage))
     ;; The concat demuxer needs the final image repeated to honor its duration.
-    (format stream "file '~A'~%" (first (car (last *explainer-stages*))))) )
+    (format stream "file '~A'~%" (first (car (last (%explainer-stages))))) ))
 
 (defun %write-explainer-readme (directory marker-x marker-y seconds-per-stage)
   (declare (ignore marker-x marker-y))
@@ -460,11 +563,11 @@ than becoming a separate illustrative scene."
     (format stream "GPU Raytracer explainer storyboard~%~%")
     (format stream "The diagrams show the actual GPU launch structure and one representative pixel. ~%")
     (format stream "Each stage is displayed for ~D seconds.\n\n" seconds-per-stage)
-    (dolist (stage *explainer-stages*)
+    (dolist (stage (%explainer-stages))
       (format stream "~A: ~A~%" (first stage) (second stage)))))
 
 (defun run-gpu-explainer (&key (res 8) (directory "gpu-explainer")
-                                (seconds-per-stage 10))
+                                (seconds-per-stage 10) (language :ja))
   "Render a still scene and save numbered explanatory stages plus video metadata.
 
 RUN.SH's MODE=explainer consumes storyboard.ffconcat and explanation.srt to
@@ -472,22 +575,24 @@ produce an MP4.  The yellow marker is intentionally added only to these
 educational copies, never to the production render."
   (unless (plusp seconds-per-stage)
     (error "SECONDS-PER-STAGE must be positive, got ~S." seconds-per-stage))
-  (let* ((width (* res 100))
-         (height (* res 100))
-         ;; The exact center looks at the floor in this scene.  This point
-         ;; deliberately lands on a large foreground sphere, making the
-         ;; primary-ray and reflection explanations visually meaningful.
-         (marker-x (floor (* width 0.45f0)))
-         (marker-y (floor (* height 0.275f0)))
-         (final-path (%explainer-path directory "final-unannotated.ppm")))
-    (ensure-directories-exist final-path)
-    (run-gpu-raytracer :res res :output-file final-path
-                        :write-debug-images t
-                        :explain-directory directory
-                        :explain-pixel-x marker-x
-                        :explain-pixel-y marker-y
-                        :progressive-directory directory
-                        :progressive-bands 5)
-    (%write-explainer-subtitles directory seconds-per-stage)
-    (%write-explainer-readme directory marker-x marker-y seconds-per-stage)
-    (format t "Explainer storyboard written to ~A~%" (%explainer-directory directory))))
+  (let ((*explainer-language* (%normalize-explainer-language language)))
+    (let* ((width (* res 100))
+           (height (* res 100))
+           ;; The exact center looks at the floor in this scene.  This point
+           ;; deliberately lands on a large foreground sphere, making the
+           ;; primary-ray and reflection explanations visually meaningful.
+           (marker-x (floor (* width 0.45f0)))
+           (marker-y (floor (* height 0.275f0)))
+           (final-path (%explainer-path directory "final-unannotated.ppm")))
+      (ensure-directories-exist final-path)
+      (run-gpu-raytracer :res res :output-file final-path
+                          :write-debug-images t
+                          :explain-directory directory
+                          :explain-pixel-x marker-x
+                          :explain-pixel-y marker-y
+                          :progressive-directory directory
+                          :progressive-bands 5)
+      (%write-explainer-subtitles directory seconds-per-stage)
+      (%write-explainer-readme directory marker-x marker-y seconds-per-stage)
+      (format t "Explainer storyboard written to ~A (~A)~%"
+              (%explainer-directory directory) *explainer-language*))))

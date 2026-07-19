@@ -8,42 +8,42 @@
                           run-gpu-raytracer))
 
 (defparameter *explainer-stages*
-  '(("00-title.ppm" "Common Lisp と GPUで学ぶ 趣味のレイトレーシング")
-    ("01-intro.ppm" "レイトレーサーとは")
-    ("02-scene.ppm" "まず、Lisp（CPU側）がシミュレーション空間にカメラ・光源・空・床・球を配置します。
-位置・半径・色・材質の値を配列にしてGPUへ送ります。")
-    ("03-ray-direction.ppm" "光源は実際には全方向へ光を出します。
-橙は L→H→C の代表経路。GPUはこれをカメラ側から逆向きに追跡します。")
-    ("04-pixel.ppm" "これはGPUが出力する完成画像です。黄色い小枠の1マスが、これから追う1画素です。
-この1画素の色を求めるために、カメラからレイを出します。")
-    ("05-primary-ray.ppm" "選んだ1画素の色を調べるため、カメラから最初に出すレイ（主レイ）です。
-最初に当たった表面Hを見つけ、そこで色の計算を始めます。")
-    ("06-shadow-ray.ppm" "表面Hから光源へ、光が届くかを調べるレイ（影レイ）です。
-途中に物体があれば、その光は表面Hには届かず、影になります。")
-    ("07-local-shading.ppm" "直接照明は、光源から表面Hへ届く明るさです。
-その明るさと材質の色・面の向き・影レイの結果が、この画素の色を決めます。")
-    ("08-reflection-ray.ppm" "反射する物体では、表面Hから反射した先を調べるレイ（反射レイ）を出します。
-そこで見つけた色も足して、この画素の最終RGBを決めます。")
-    ("09-grid.ppm" "このプログラムでは、16×16画素を一組にし、その組をブロックと呼びます。
-画面全体を一度に渡すのではなく、ブロック単位に分けてGPUへ仕事を渡します。")
-    ("10-thread-flow.ppm" "ブロック内の各画素は、スレッドという計算担当に渡されます。
-1スレッドが、1画素の色を最初のレイから最終RGBまで計算します。")
-    ("11-scheduling.ppm" "800×800画素を、16×16画素の2500ブロックに分けます。
-SM（Streaming Multiprocessor）は、ブロックのスレッドを実行する装置です。")
-    ("12-progress-01.ppm" "ここから、Lispが配置したカメラ・空・球・床・光源をGPUが計算します。
-開始直後は、最終色を出し終えた画素がまだごく一部です。")
-    ("12-progress-02.ppm" "先に終えた画素では、Lispが指定した空・球・床の色が現れます。
-影レイで光が遮られた場所は、同じ材質でも暗くなります。")
-    ("12-progress-03.ppm" "各画素では、主レイ（カメラから最初に出すレイ）で表面を見つけ、影レイで光の遮りを調べます。
-反射する球では反射レイの結果も加え、表面に周囲の色や明るさを映します。")
-    ("12-progress-04.ppm" "完了した画素が増えるにつれ、空・球・床・影の形が見えてきます。
-色の位置は、Lispが配置した物体と光源から計算された結果です。")
-    ("12-progress-05.ppm" "全画素の計算が終わり、Lispが置いたシーン全体が画像になりました。
-この完成したRGB配列をGPUからCPUへコピーして保存します。")
-    ("14-transfer.ppm" "PPM（Portable Pixmap）は、画像の各画素の色をR・G・Bの数値として保存する
-シンプルな画像ファイルです。GPUが計算した最終RGB配列をCPUへコピーして保存します。")
-    ("15-final.ppm" "全画素の最終RGB値がそろった完成画像です。
-1回のGPUカーネル実行で計算した結果を、画像ファイルに保存しました。")))
+  '(("00-title.ppm" "A Hobby Ray Tracer in Common Lisp and GPU")
+    ("01-intro.ppm" "What Is a Ray Tracer?")
+    ("02-scene.ppm" "Lisp places the camera, light, sky, floor, and spheres.
+It sends their data to the GPU as arrays.")
+    ("03-ray-direction.ppm" "Light travels in all directions.
+Orange shows one L→H→C path; the GPU traces it backward.")
+    ("04-pixel.ppm" "The GPU's finished image has one color per pixel.
+The yellow box marks the pixel whose color we trace.")
+    ("05-primary-ray.ppm" "A primary ray starts at the camera to find one pixel's color.
+It first hits H, where color calculation begins.")
+    ("06-shadow-ray.ppm" "A shadow ray checks whether light travels from H to the light.
+If blocked, light cannot reach H, creating a shadow.")
+    ("07-local-shading.ppm" "Direct lighting is brightness reaching H from the light.
+It combines with material color, surface direction, and shadow.")
+    ("08-reflection-ray.ppm" "A reflection ray leaves H to inspect the reflected scene.
+Its returned color helps determine the pixel's final RGB value.")
+    ("09-grid.ppm" "The program groups 16×16 pixels into one block.
+It gives the GPU work one block at a time.")
+    ("10-thread-flow.ppm" "Each pixel in a block is assigned to a worker called a thread.
+One thread calculates one pixel from its first ray to final RGB.")
+    ("11-scheduling.ppm" "An 800×800 image becomes 2,500 blocks of 16×16 pixels.
+An SM runs the threads belonging to one block.")
+    ("12-progress-01.ppm" "The GPU now calculates Lisp's sky, spheres, floor, and light.
+At the start, only a few pixels have final colors.")
+    ("12-progress-02.ppm" "Finished pixels reveal Lisp's sky, sphere, and floor colors.
+Where a shadow ray finds blocked light, the material is darker.")
+    ("12-progress-03.ppm" "Primary rays find surfaces; shadow rays test blocked light.
+Reflective spheres add color and light from reflection rays.")
+    ("12-progress-04.ppm" "As pixels finish, sky, spheres, floor, and shadows take shape.
+Colors and positions come from Lisp's scene and light.")
+    ("12-progress-05.ppm" "All pixels are complete: Lisp's full scene is now an image.
+Final RGB is copied from GPU to CPU for saving.")
+    ("14-transfer.ppm" "PPM (Portable Pixmap) stores each pixel as RGB numbers.
+The CPU saves the final RGB array copied from the GPU.")
+    ("15-final.ppm" "This finished image has final RGB values for every pixel.
+One GPU kernel launch produced it and it was saved as a file.")))
 
 (defun %explainer-directory (directory)
   (make-pathname :name nil :type nil
@@ -53,6 +53,55 @@ SM（Streaming Multiprocessor）は、ブロックのスレッドを実行する
 
 (defun %explainer-path (directory filename)
   (merge-pathnames filename (%explainer-directory directory)))
+
+(defun %replace-all (text old new)
+  (with-output-to-string (out)
+    (loop with start = 0
+          for hit = (search old text :start2 start)
+          do (if hit
+                 (progn (write-string text out :start start :end hit)
+                        (write-string new out)
+                        (setf start (+ hit (length old))))
+                 (progn (write-string text out :start start) (return))))))
+
+(defun localize-explainer-svgs (directory)
+  "Translate all visible diagram labels for this English-only branch."
+  (let ((replacements
+          '(("レイトレーサーは、カメラに入る光の経路を逆向きに追跡し、" . "A ray tracer follows the path of light entering the camera backward.")
+            ("物体・光・反射を計算して3D画像を作ります。" . "It calculates objects, light, and reflections to make a 3D image.")
+            ("レイ（光線）をトレース（追跡）する者。だから、レイトレーサーです。" . "It traces rays of light — that is why it is a ray tracer.")
+            ("今回は、Common Lispが設定した情報をもとに、GPUが画素を並列に計算します。" . "Here, a GPU calculates pixels in parallel from data set by Common Lisp.")
+            ("空・球・床" . "Sky, spheres, floor") ("空・床" . "Sky and floor")
+            ("実際の配置（上から）" . "Actual layout (top view)")
+            ("同じ実座標を拡大（上から）" . "Same coordinates, zoomed in (top view)")
+            ("当たり点" . "Hit point") ("光は全方向へ広がる" . "Light spreads in all directions")
+            ("最初に出すレイ（主レイ）" . "First ray (primary ray)")
+            ("光が届くか調べるレイ（影レイ）" . "Tests light visibility (shadow ray)")
+            ("直接照明：光源からHへ届く明るさ" . "Direct lighting: brightness reaching H from the light")
+            ("反射した先を調べるレイ（反射レイ）" . "Tests what is reflected (reflection ray)")
+            ("1ブロック：16 × 16画素" . "One block: 16 × 16 pixels")
+            ("この橙の四角が1ブロック" . "This orange square is one block")
+            ("この全体が" . "This whole block")
+            ("完成画像の1画素" . "One pixel in the final image")
+            ("1 スレッド" . "One thread") ("主レイ" . "Primary ray") ("影レイ" . "Shadow ray")
+            ("全画素の最終RGB配列" . "Final RGB array for all pixels")
+            ("最終RGB" . "Final RGB") ("GPUメモリ" . "GPU memory")
+            ("カーネル完了後に、完成済みバッファをCPUへコピー" . "After the kernel finishes, copy the completed buffer to the CPU")
+            ("PPM（Portable Pixmap）" . "PPM (Portable Pixmap)")
+            ("各画素の R / G / B の数値" . "RGB numbers for each pixel")
+            ("→ 画像ファイルとして保存" . "→ Save as an image file")
+            ("device → host コピー" . "device → host copy")
+            ;; Keep the generic terms last so they do not break longer labels.
+            ("カメラ" . "Camera") ("光源" . "Light") ("レイ" . "Ray"))))
+    (dolist (filename '("intro.svg" "scene.svg" "ray-direction.svg" "primary-ray.svg"
+                        "shadow-ray.svg" "local-shading.svg" "reflection-ray.svg"
+                        "grid.svg" "thread-flow.svg" "scheduling.svg" "transfer.svg"))
+      (let ((path (%explainer-path directory filename)))
+        (when (probe-file path)
+          (let ((text (uiop:read-file-string path)))
+            (dolist (pair replacements) (setf text (%replace-all text (car pair) (cdr pair))))
+            (with-open-file (out path :direction :output :if-exists :supersede)
+              (write-string text out))))))))
 
 (defun %ray-sphere-hit (ox oy oz dx dy dz sphere)
   (let* ((cx (first sphere)) (cy (second sphere)) (cz (third sphere))
@@ -364,7 +413,8 @@ than becoming a separate illustrative scene."
         (write-runtime-diagram "grid.svg" "ブロック" :grid)
         (write-runtime-diagram "thread-flow.svg" "スレッド" :thread-flow)
         (write-runtime-diagram "scheduling.svg" "実行" :scheduling)
-        (write-runtime-diagram "transfer.svg" "転送" :transfer)))))
+        (write-runtime-diagram "transfer.svg" "転送" :transfer)
+        (localize-explainer-svgs directory)))))
 
 (defun write-explainer-stage-images
     (directory width height size marker-x marker-y
@@ -405,12 +455,12 @@ than becoming a separate illustrative scene."
       (loop for character across caption
             do (if (char= character #\Newline)
                    (progn
-                     (when (or (zerop line-length) (> line-length 52))
+                     (when (or (zerop line-length) (> line-length 64))
                        (error "Invalid subtitle line in ~A: ~S" (first stage) caption))
                      (setf line-length 0)
                      (incf line-count))
                    (incf line-length)))
-      (when (or (> line-count 2) (zerop line-length) (> line-length 52))
+      (when (or (> line-count 2) (zerop line-length) (> line-length 64))
         (error "Subtitle must contain one or two short lines in ~A: ~S"
                (first stage) caption))
       ;; These patterns indicate a term was split in the middle, rather than

@@ -1,30 +1,40 @@
 ;;;; gpu-live-background.lsp
-;;;; Continuous, file-free rendering for Monadius.
+;;;; Continuous, file-free rendering for Monadius through anonymous shared RAM.
 
 (load (merge-pathnames "gpu-package.lsp" *load-truename*))
 
 (in-package :gpu-raytracer)
 
-;; These functions are implemented by RayBackgroundBridge.cpp in the same
-;; process.  Lisp never waits for a Haskell frame: it publishes only after a
-;; complete CUDA render has been copied back to host memory.
-(cffi:defcfun ("monadiusRayBackgroundShouldStop"
-               %ray-background-should-stop)
-    :int)
+(defvar *live-shared-library-loaded* nil)
 
-(cffi:defcfun ("monadiusPublishRayBackgroundRgb"
-               %publish-ray-background-rgb)
-    :void
+(cffi:defcfun ("monadiusSharedAttach" %shared-attach) :pointer
+  (file-descriptor :int))
+(cffi:defcfun ("monadiusSharedWidth" %shared-width) :int
+  (context :pointer))
+(cffi:defcfun ("monadiusSharedHeight" %shared-height) :int
+  (context :pointer))
+(cffi:defcfun ("monadiusSharedShouldStop" %shared-should-stop) :int
+  (context :pointer))
+(cffi:defcfun ("monadiusSharedPublishRgb" %shared-publish-rgb) :int
+  (context :pointer)
   (red :pointer)
   (green :pointer)
   (blue :pointer)
   (width :int)
   (height :int))
+(cffi:defcfun ("monadiusSharedFail" %shared-fail) :void
+  (context :pointer)
+  (error-code :int))
+(cffi:defcfun ("monadiusSharedClose" %shared-close) :void
+  (context :pointer))
 
-(cffi:defcfun ("monadiusReportRayBackgroundError"
-               %report-ray-background-error)
-    :void
-  (message :string))
+(defun %load-live-shared-library ()
+  (unless *live-shared-library-loaded*
+    (let ((library (sb-ext:posix-getenv "MONADIUS_RAY_SHARED_LIBRARY")))
+      (unless (and library (plusp (length library)))
+        (error "MONADIUS_RAY_SHARED_LIBRARY is not set."))
+      (cffi:load-foreign-library library)
+      (setf *live-shared-library-loaded* t))))
 
 (defun %configure-live-cuda-cache ()
   (let ((raw-directory (sb-ext:posix-getenv "MONADIUS_RAY_CUDA_CACHE")))
@@ -97,12 +107,14 @@
           (incf small-sphere-index))))
     sphere-data))
 
-(defun run-gpu-live-background (&key (width 800) (height 600))
-  "Continuously publish complete animated frames through the in-process bridge.
+(defun run-gpu-live-background (&key shared-context width height)
+  "Continuously publish complete animated frames through SHARED-CONTEXT.
 
-CUDA context, kernel module, and memory blocks live for the whole loop.  The
-consumer can therefore keep drawing its previous texture while this function
-is still calculating the next frame."
+CUDA context, kernel module, and memory blocks live for the whole loop. The
+Haskell process keeps drawing its previous texture while this function is
+calculating the next frame."
+  (unless (and shared-context (not (cffi:null-pointer-p shared-context)))
+    (error "A mapped Monadius shared-memory context is required."))
   (unless (and (plusp width) (plusp height))
     (error "Live background dimensions must be positive, got ~Dx~D."
            width height))
@@ -110,7 +122,6 @@ is still calculating the next frame."
   (let* ((size (* width height))
          (width-f (float width 1.0f0))
          (height-f (float height 1.0f0))
-         ;; Camera parameters, matching RUN-GPU-RAYTRACER.
          (eye-x 550.0f0) (eye-y -380.0f0) (eye-z 650.0f0)
          (look-x 0.0f0) (look-y 160.0f0) (look-z -1200.0f0)
          (up-x 0.0f0) (up-y -1.0f0) (up-z 0.0f0)
@@ -130,8 +141,6 @@ is still calculating the next frame."
          (rlen (sqrt (+ (* rx-raw rx-raw)
                         (* ry-raw ry-raw)
                         (* rz-raw rz-raw))))
-         ;; Scale the right vector by the target aspect ratio.  The original
-         ;; renderer is square, while Monadius' play field is 4:3.
          (aspect (/ width-f height-f))
          (rx (* (/ rx-raw rlen) aspect))
          (ry (* (/ ry-raw rlen) aspect))
@@ -224,7 +233,7 @@ is still calculating the next frame."
           (setf (memory-block-aref completion-counter 0) 0)
           (sync-memory-block completion-counter :host-to-device)
           (loop for frame from 0
-                until (plusp (%ray-background-should-stop))
+                until (plusp (%shared-should-stop shared-context))
                 do (upload-scene frame)
                    (raytrace-kernel-v12
                     out-r out-g out-b out-shadow
@@ -248,11 +257,14 @@ is still calculating the next frame."
                    (sync-memory-block out-r :device-to-host)
                    (sync-memory-block out-g :device-to-host)
                    (sync-memory-block out-b :device-to-host)
-                   (%publish-ray-background-rgb
-                    (memory-block-host-ptr out-r)
-                    (memory-block-host-ptr out-g)
-                    (memory-block-host-ptr out-b)
-                    width height)
+                   (unless (plusp
+                            (%shared-publish-rgb
+                             shared-context
+                             (memory-block-host-ptr out-r)
+                             (memory-block-host-ptr out-g)
+                             (memory-block-host-ptr out-b)
+                             width height))
+                     (error "The shared-memory bridge rejected a completed frame."))
                    (when (or (zerop frame)
                              (zerop (mod (1+ frame) 30)))
                      (format t "Live CUDA background published frame ~D.~%"
@@ -260,15 +272,28 @@ is still calculating the next frame."
                      (finish-output))))))
     (format t "Live CUDA background stopped between frames.~%")))
 
-;; SAVE-LISP-AND-DIE stores this C-callable entry in the Colab core.  C++ calls
-;; it from its own worker thread so the Haskell game loop never enters Lisp.
-(sb-alien:define-alien-callable
-    ("monadius_lisp_ray_background_run" lisp-ray-background-run)
-    sb-alien:void
-    ((width sb-alien:int) (height sb-alien:int))
-  (handler-case
-      (run-gpu-live-background :width width :height height)
-    (error (condition)
-      (let ((message (format nil "~A" condition)))
-        (format *error-output* "Live CUDA background failed: ~A~%" message)
-        (ignore-errors (%report-ray-background-error message))))))
+(defun run-gpu-live-background-process ()
+  "Attach the inherited memfd and run the standalone Lisp producer process."
+  (%load-live-shared-library)
+  (let* ((descriptor-text
+           (sb-ext:posix-getenv "MONADIUS_RAY_SHARED_FD"))
+         (descriptor
+           (and descriptor-text
+                (ignore-errors (parse-integer descriptor-text :junk-allowed nil))))
+         (context
+           (and descriptor (%shared-attach descriptor))))
+    (unless (and context (not (cffi:null-pointer-p context)))
+      (error "Could not attach the inherited Monadius shared memory."))
+    (unwind-protect
+         (handler-case
+             (run-gpu-live-background
+              :shared-context context
+              :width (%shared-width context)
+              :height (%shared-height context))
+           (error (condition)
+             (format *error-output* "Live CUDA background failed: ~A~%"
+                     condition)
+             (finish-output *error-output*)
+             (%shared-fail context 1)
+             (error condition)))
+      (%shared-close context))))

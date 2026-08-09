@@ -19,5 +19,6 @@
   (:export :run-gpu-raytracer
            :run-gpu-animation
            :run-gpu-live-background
+           :run-gpu-live-background-process
            :run-gpu-explainer
            :verify-kernel-structure))

@@ -57,3 +57,14 @@ env MODE=animation RES=8 FRAMES=300 FPS=60 bash GPU/run.sh
 `FRAMES` は生成するフレーム数、`FPS` は動画の毎秒フレーム数です。上の例は
 300フレームを60fpsでエンコードするため、5秒の動画になります。生成した各フレームは
 `GPU/frames_gpu/` に保存されます。
+
+## Monadiusのライブ背景
+
+`feature/shared-memory-ray-background` では、Monadiusの`Main`とは別のSBCLプロセスで
+CUDAレンダリングを続けます。`Main`が作った匿名RAM（Linux `memfd`）を継承し、完成した
+RGBA画像だけを世代番号付き3バッファへ公開します。画像ファイルは書きません。
+
+起動はMonadius側が`GPU/run-shared-background.lsp`を呼び出して管理します。Haskellは
+世代番号が変わった時だけOpenGLテクスチャを更新し、Lispが次の画像を計算中なら直前の
+完成画像を背景として使い続けます。SBCLとGHCは同じプロセスへロードされないため、
+両ランタイムのシグナル処理や浮動小数点環境も分離されます。

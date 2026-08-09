@@ -10,6 +10,7 @@
                 :with-cuda
                 :with-memory-blocks
                 :memory-block-aref
+                :memory-block-host-ptr
                 :sync-memory-block
                 ;; CUDA-language built-ins used inside DEFKERNEL bodies.
                 :atomic-add
@@ -17,5 +18,6 @@
                 :void :float* :int* :int)
   (:export :run-gpu-raytracer
            :run-gpu-animation
+           :run-gpu-live-background
            :run-gpu-explainer
            :verify-kernel-structure))

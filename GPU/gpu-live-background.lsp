@@ -13,6 +13,8 @@
   (context :pointer))
 (cffi:defcfun ("monadiusSharedHeight" %shared-height) :int
   (context :pointer))
+(cffi:defcfun ("monadiusSharedStage" %shared-stage) :int
+  (context :pointer))
 (cffi:defcfun ("monadiusSharedShouldStop" %shared-should-stop) :int
   (context :pointer))
 (cffi:defcfun ("monadiusSharedPublishRgb" %shared-publish-rgb) :int
@@ -45,6 +47,17 @@
                   (concatenate 'string raw-directory "/"))))
         (ensure-directories-exist (concatenate 'string directory "placeholder"))
         (setf cl-cuda.api.nvcc:*tmp-path* directory)))))
+
+(defun %live-sky-gradient (stage)
+  "Return the low and high RGB endpoints for Monadius STAGE."
+  (case stage
+    (2 (values 0.0f0 0.0f0 0.0f0
+               0.0f0 0.0f0 0.0f0))
+    (3 (values 1.0f0 0.0f0 0.0f0
+               1.0f0 0.0f0 0.0f0))
+    (otherwise
+     (values 1.0f0 1.0f0 1.0f0
+             0.2f0 0.5f0 1.0f0))))
 
 (defun %make-live-sphere-data (frame)
   "Create the same animated scene used by RUN-GPU-ANIMATION for FRAME."
@@ -232,28 +245,41 @@ calculating the next frame."
                    (sync-memory-block sph-ior :host-to-device)))
           (setf (memory-block-aref completion-counter 0) 0)
           (sync-memory-block completion-counter :host-to-device)
-          (loop for frame from 0
+          (loop with rendered-stage = 0
+                for frame from 0
                 until (plusp (%shared-should-stop shared-context))
                 do (upload-scene frame)
-                   (raytrace-kernel-v12
-                    out-r out-g out-b out-shadow
-                    out-direct-r out-direct-g out-direct-b
-                    out-one-bounce-r out-one-bounce-g out-one-bounce-b
-                    out-completion-rank completion-counter
-                    0
-                    width height 0 0
-                    width-f height-f
-                    sph-cx sph-cy sph-cz sph-r
-                    sph-col-r sph-col-g sph-col-b sph-refl sph-ior
-                    num-spheres
-                    eye-x eye-y eye-z
-                    fx fy fz
-                    rx ry rz
-                    ux uy uz
-                    scale
-                    sky-yr-min sky-yr-max
-                    :grid-dim (list grid-x grid-y 1)
-                    :block-dim (list block-x block-y 1))
+                   (let ((stage (%shared-stage shared-context)))
+                     (unless (= stage rendered-stage)
+                       (setf rendered-stage stage)
+                       (format t "Live CUDA background selected stage ~D sky.~%"
+                               stage)
+                       (finish-output))
+                     (multiple-value-bind
+                         (sky-low-r sky-low-g sky-low-b
+                          sky-high-r sky-high-g sky-high-b)
+                         (%live-sky-gradient stage)
+                       (raytrace-kernel-v13
+                        out-r out-g out-b out-shadow
+                        out-direct-r out-direct-g out-direct-b
+                        out-one-bounce-r out-one-bounce-g out-one-bounce-b
+                        out-completion-rank completion-counter
+                        0
+                        width height 0 0
+                        width-f height-f
+                        sph-cx sph-cy sph-cz sph-r
+                        sph-col-r sph-col-g sph-col-b sph-refl sph-ior
+                        num-spheres
+                        eye-x eye-y eye-z
+                        fx fy fz
+                        rx ry rz
+                        ux uy uz
+                        scale
+                        sky-yr-min sky-yr-max
+                        sky-low-r sky-low-g sky-low-b
+                        sky-high-r sky-high-g sky-high-b
+                        :grid-dim (list grid-x grid-y 1)
+                        :block-dim (list block-x block-y 1))))
                    (sync-memory-block out-r :device-to-host)
                    (sync-memory-block out-g :device-to-host)
                    (sync-memory-block out-b :device-to-host)

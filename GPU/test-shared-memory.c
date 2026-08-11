@@ -20,7 +20,7 @@ typedef struct __attribute__((aligned(64))) test_shared_header {
   uint64_t pixel_bytes;
   uint64_t total_bytes;
   uint32_t producer_pid;
-  uint32_t reserved0;
+  uint32_t requested_stage;
   uint64_t reserved1;
   uint64_t generation;
   uint32_t front_index;
@@ -36,10 +36,13 @@ typedef struct __attribute__((aligned(64))) test_shared_header {
 _Static_assert(sizeof(test_shared_header) == 128, "test protocol size");
 _Static_assert(__builtin_offsetof(test_shared_header, generation) == 64,
                "test protocol atomics");
+_Static_assert(__builtin_offsetof(test_shared_header, requested_stage) == 52,
+               "test protocol stage field");
 
 int monadiusSharedPublishRgb(void*, const float*, const float*, const float*,
                             int, int);
 int monadiusSharedShouldStop(void*);
+int monadiusSharedStage(void*);
 void* monadiusSharedAttach(int);
 void monadiusSharedClose(void*);
 
@@ -62,7 +65,7 @@ int main(void) {
   if (!require(header != MAP_FAILED, "mmap")) return 1;
   memset(header, 0, total_bytes);
   header->magic = UINT64_C(0x4d4f4e4152495553);
-  header->version = 1;
+  header->version = 2;
   header->header_bytes = sizeof(*header);
   header->width = width;
   header->height = height;
@@ -71,10 +74,16 @@ int main(void) {
   header->pixel_bytes = pixel_bytes;
   header->total_bytes = total_bytes;
   header->reader_index = UINT32_MAX;
+  header->requested_stage = 1;
 
   void* context = monadiusSharedAttach(dup(fd));
   if (!require(context != NULL, "producer attach")) return 1;
   if (!require(header->producer_state == 1, "producer running state")) return 1;
+  if (!require(monadiusSharedStage(context) == 1, "initial stage")) return 1;
+  header->requested_stage = 3;
+  if (!require(monadiusSharedStage(context) == 3, "updated stage")) return 1;
+  header->requested_stage = 0;
+  if (!require(monadiusSharedStage(context) == 1, "invalid stage fallback")) return 1;
 
   const float red[2] = {0.0f, 1.0f};
   const float green[2] = {0.5f, NAN};

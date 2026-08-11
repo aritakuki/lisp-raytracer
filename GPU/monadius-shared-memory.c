@@ -15,7 +15,7 @@
 #include <unistd.h>
 
 #define MONADIUS_SHARED_MAGIC UINT64_C(0x4d4f4e4152495553)
-#define MONADIUS_SHARED_VERSION UINT32_C(1)
+#define MONADIUS_SHARED_VERSION UINT32_C(2)
 #define MONADIUS_BUFFER_COUNT UINT32_C(3)
 #define MONADIUS_PIXEL_FORMAT_RGBA8 UINT32_C(1)
 #define MONADIUS_NO_READER UINT32_MAX
@@ -38,7 +38,7 @@ typedef struct __attribute__((aligned(64))) monadius_shared_header {
   uint64_t pixel_bytes;
   uint64_t total_bytes;
   uint32_t producer_pid;
-  uint32_t reserved0;
+  uint32_t requested_stage;
   uint64_t reserved1;
   uint64_t generation;
   uint32_t front_index;
@@ -55,6 +55,8 @@ _Static_assert(sizeof(monadius_shared_header) == 128,
                "live background shared header must be 128 bytes");
 _Static_assert(__builtin_offsetof(monadius_shared_header, generation) == 64,
                "live background atomic fields moved");
+_Static_assert(__builtin_offsetof(monadius_shared_header, requested_stage) == 52,
+               "live background stage field moved");
 _Static_assert(__builtin_offsetof(monadius_shared_header, heartbeat) == 96,
                "live background protocol layout changed");
 
@@ -172,6 +174,13 @@ int monadiusSharedWidth(void* opaque) {
 int monadiusSharedHeight(void* opaque) {
   monadius_shared_context* context = (monadius_shared_context*)opaque;
   return context == NULL ? 0 : (int)context->header->height;
+}
+
+int monadiusSharedStage(void* opaque) {
+  monadius_shared_context* context = (monadius_shared_context*)opaque;
+  if (context == NULL) return 1;
+  const uint32_t stage = atomic_load_u32(&context->header->requested_stage);
+  return stage >= 1 && stage <= 3 ? (int)stage : 1;
 }
 
 int monadiusSharedShouldStop(void* opaque) {

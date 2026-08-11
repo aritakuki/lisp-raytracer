@@ -241,16 +241,20 @@
                (list `(set ,shadow-factor-out sf)))))))
 
   (defun make-compute-sky-color (dy r-val g-val b-val)
-    ;; Same sky gradient as CPU/sendray.
+    ;; The live producer supplies stage-specific gradient endpoints.  Still
+    ;; renders use the original CPU/sendray colours.
     `(let* ((sky-t (if (< ,dy sky-yr-min)
                        0.0f0
                        (if (> ,dy sky-yr-max)
                            1.0f0
                            (/ (- ,dy sky-yr-min) (- sky-yr-max sky-yr-min)))))
             (sky-t-pow (expt sky-t 0.3f0)))
-       (set ,r-val (+ (* (- 1.0f0 sky-t-pow) 1.0f0) (* sky-t-pow 0.2f0)))
-       (set ,g-val (+ (* (- 1.0f0 sky-t-pow) 1.0f0) (* sky-t-pow 0.5f0)))
-       (set ,b-val (+ (* (- 1.0f0 sky-t-pow) 1.0f0) (* sky-t-pow 1.0f0)))))
+       (set ,r-val (+ (* (- 1.0f0 sky-t-pow) sky-low-r)
+                      (* sky-t-pow sky-high-r)))
+       (set ,g-val (+ (* (- 1.0f0 sky-t-pow) sky-low-g)
+                      (* sky-t-pow sky-high-g)))
+       (set ,b-val (+ (* (- 1.0f0 sky-t-pow) sky-low-b)
+                      (* sky-t-pow sky-high-b)))))
 
   (defun make-update-reflection-ray (hit-x hit-y hit-z dx dy dz nx ny nz rx ry rz ox oy oz)
     `(let* ((dot-d-n (+ (* ,dx ,nx) (* ,dy ,ny) (* ,dz ,nz)))
@@ -417,7 +421,7 @@
 
 ;; GPU Raytracer Kernel definition utilizing code templates to expand exactly 3 recursion levels.
 (eval
-  `(defkernel raytrace-kernel-v12 (void ((out-r float*) (out-g float*) (out-b float*)
+  `(defkernel raytrace-kernel-v13 (void ((out-r float*) (out-g float*) (out-b float*)
                                     (out-shadow float*)
                                     ;; Primary shading before any recursive reflection.
                                     (out-direct-r float*) (out-direct-g float*) (out-direct-b float*)
@@ -439,7 +443,9 @@
                                     (r-x cl-cuda:float) (r-y cl-cuda:float) (r-z cl-cuda:float)
                                     (u-x cl-cuda:float) (u-y cl-cuda:float) (u-z cl-cuda:float)
                                     (scale cl-cuda:float)
-                                    (sky-yr-min cl-cuda:float) (sky-yr-max cl-cuda:float)))
+                                    (sky-yr-min cl-cuda:float) (sky-yr-max cl-cuda:float)
+                                    (sky-low-r cl-cuda:float) (sky-low-g cl-cuda:float) (sky-low-b cl-cuda:float)
+                                    (sky-high-r cl-cuda:float) (sky-high-g cl-cuda:float) (sky-high-b cl-cuda:float)))
      (let* ((ix (+ (* (+ block-base-x cl-cuda:block-idx-x) cl-cuda:block-dim-x) cl-cuda:thread-idx-x))
             (iy (+ (* (+ block-base-y cl-cuda:block-idx-y) cl-cuda:block-dim-y) cl-cuda:thread-idx-y)))
        (if (< ix width)
@@ -668,7 +674,7 @@
 ;;   G = first reflected-ray hit type (0.0 sky, 0.5 sphere, 1.0 plane)
 ;;   B = normalized reflected-ray distance (0.0 for sky)
 (eval
-  `(defkernel reflection-path-debug-kernel-v2
+  `(defkernel reflection-path-debug-kernel-v3
        (void ((out-r float*) (out-g float*) (out-b float*)
               ;; Shaded colour returned by the first reflection ray.
               (out-child-r float*) (out-child-g float*) (out-child-b float*)
@@ -689,7 +695,9 @@
               (r-x cl-cuda:float) (r-y cl-cuda:float) (r-z cl-cuda:float)
               (u-x cl-cuda:float) (u-y cl-cuda:float) (u-z cl-cuda:float)
               (scale cl-cuda:float)
-              (sky-yr-min cl-cuda:float) (sky-yr-max cl-cuda:float)))
+              (sky-yr-min cl-cuda:float) (sky-yr-max cl-cuda:float)
+              (sky-low-r cl-cuda:float) (sky-low-g cl-cuda:float) (sky-low-b cl-cuda:float)
+              (sky-high-r cl-cuda:float) (sky-high-g cl-cuda:float) (sky-high-b cl-cuda:float)))
      (let* ((ix (+ (* cl-cuda:block-idx-x cl-cuda:block-dim-x) cl-cuda:thread-idx-x))
             (iy (+ (* cl-cuda:block-idx-y cl-cuda:block-dim-y) cl-cuda:thread-idx-y)))
        (if (< ix width)
@@ -1032,10 +1040,10 @@
           ;; cl-cuda cannot reuse a module compiled for an older definition.
           (setf (memory-block-aref completion-counter 0) 0)
           (sync-memory-block completion-counter :host-to-device)
-          (format t "Launching CUDA kernel v12 (Grid: ~Ax~A, Block: ~Ax~A)...~%" grid-x grid-y block-x block-y)
+          (format t "Launching CUDA kernel v13 (Grid: ~Ax~A, Block: ~Ax~A)...~%" grid-x grid-y block-x block-y)
           (let ((start-time (get-internal-real-time)))
             (flet ((launch-main (launch-grid-y block-base-y)
-                     (raytrace-kernel-v12 out-r out-g out-b out-shadow
+                     (raytrace-kernel-v13 out-r out-g out-b out-shadow
                                            out-direct-r out-direct-g out-direct-b
                                            out-one-bounce-r out-one-bounce-g out-one-bounce-b
                                            out-completion-rank completion-counter
@@ -1053,6 +1061,8 @@
                                            ux uy uz
                                            scale
                                            sky-yr-min sky-yr-max
+                                           1.0f0 1.0f0 1.0f0
+                                           0.2f0 0.5f0 1.0f0
                                            :grid-dim (list grid-x launch-grid-y 1)
                                            :block-dim (list block-x block-y 1))))
               (launch-main grid-y 0))
@@ -1062,7 +1072,7 @@
             ;; not feed back into the production render, and is skipped for
             ;; animation frames to avoid producing 60 sets of debug images.
             (when write-debug-images
-              (reflection-path-debug-kernel-v2
+              (reflection-path-debug-kernel-v3
                out-reflect-path-r out-reflect-path-g out-reflect-path-b
                out-reflect-child-r out-reflect-child-g out-reflect-child-b
                out-reflect-contrib-r out-reflect-contrib-g out-reflect-contrib-b
@@ -1072,6 +1082,8 @@
                sph-col-r sph-col-g sph-col-b sph-refl num-spheres
                eye-x eye-y eye-z fx fy fz rx ry rz ux uy uz scale
                sky-yr-min sky-yr-max
+               1.0f0 1.0f0 1.0f0
+               0.2f0 0.5f0 1.0f0
                :grid-dim (list grid-x grid-y 1)
                :block-dim (list block-x block-y 1)))
             
